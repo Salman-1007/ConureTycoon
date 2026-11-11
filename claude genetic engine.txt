@@ -1,0 +1,379 @@
+cd /home/claude/conure-engine/src
+
+cat > birdRecord.ts << 'EOF'
+import type { Sex } from "./genes";
+import type { Genotype } from "./genotype";
+import { MAX_BREEDINGS, PedigreeInfo } from "./pedigree";
+import { resolve, type MutationResult } from "./phenotype";
+
+// A bird as DATA: genotype + family tree + where it sits. The UI only
+// displays these. `page`/`perch` remember the last perch (-1 = never
+// placed), so a bird returns to it after a nest box if it's still free.
+export class BirdRecord {
+  readonly pedigree: PedigreeInfo;
+  readonly phenotype: MutationResult; // a genotype never changes, so resolve once
+  page = -1;
+  perch = -1;
+
+  constructor(readonly genotype: Genotype, pedigree?: PedigreeInfo) {
+    this.pedigree = pedigree ?? new PedigreeInfo();
+    this.phenotype = resolve(genotype);
+  }
+
+  get id(): string { return this.pedigree.id; }
+  get sex(): Sex { return this.genotype.sex; }
+  get displayName(): string { return this.phenotype.displayName; }
+  get canBreed(): boolean { return this.pedigree.breedCount < MAX_BREEDINGS; }
+  get breedingsLeft(): number { return MAX_BREEDINGS - this.pedigree.breedCount; }
+}
+EOF
+
+cat > discoveryBook.ts << 'EOF'
+import { NORMAL_KEY, type MutationResult } from "./phenotype";
+
+// Every mutation the player has ever seen, keyed by the stable key.
+export class DiscoveryBook {
+  private found = new Map<string, string>(); // key -> display name
+
+  get count(): number { return this.found.size; }
+  has(key: string): boolean { return this.found.has(key); }
+  all(): Array<{ key: string; name: string }> {
+    return [...this.found].map(([key, name]) => ({ key, name }));
+  }
+
+  // true the first time a non-normal mutation is seen
+  report(p: MutationResult): boolean {
+    if (p.key === NORMAL_KEY || this.found.has(p.key)) return false;
+    this.found.set(p.key, p.displayName);
+    return true;
+  }
+}
+EOF
+
+cat > penModel.ts << 'EOF'
+import type { BirdRecord } from "./birdRecord";
+
+export const PERCHES_PER_PAGE = 20;
+
+// The aviary: pages of 20 perches. Page 1 is open from the start;
+// more unlock as the player produces new combinations.
+export class PenModel {
+  unlockedPages = 1;
+  readonly maxPages: number;
+  private slots = new Map<number, BirdRecord>(); // slot index -> bird
+
+  constructor(maxPages = 10) {
+    this.maxPages = Math.max(1, maxPages);
+  }
+
+  get capacity(): number { return this.unlockedPages * PERCHES_PER_PAGE; }
+  get count(): number { return this.slots.size; }
+  allBirds(): BirdRecord[] { return [...this.slots.values()]; }
+
+  private static slotIndex = (page: number, perch: number) => page * PERCHES_PER_PAGE + perch;
+
+  contains(b: BirdRecord): boolean {
+    if (b.page < 0 || b.perch < 0) return false;
+    return this.slots.get(PenModel.slotIndex(b.page, b.perch)) === b;
+  }
+
+  birdAt(page: number, perch: number): BirdRecord | undefined {
+    return this.slots.get(PenModel.slotIndex(page, perch));
+  }
+
+  birdsOnPage(page: number): BirdRecord[] {
+    return [...this.slots]
+      .filter(([slot]) => Math.floor(slot / PERCHES_PER_PAGE) === page)
+      .sort((a, b) => a[0] - b[0])
+      .map(([, bird]) => bird);
+  }
+
+  // Home perch if free, otherwise the first free perch.
+  tryAdd(b: BirdRecord): boolean {
+    if (this.contains(b)) return true;
+
+    if (b.page >= 0 && b.perch >= 0 && b.page < this.unlockedPages) {
+      const home = PenModel.slotIndex(b.page, b.perch);
+      if (!this.slots.has(home)) { this.place(b, home); return true; }
+    }
+
+    for (let i = 0; i < this.capacity; i++) {
+      if (!this.slots.has(i)) { this.place(b, i); return true; }
+    }
+    return false;
+  }
+
+  private place(b: BirdRecord, slot: number): void {
+    b.page = Math.floor(slot / PERCHES_PER_PAGE);
+    b.perch = slot % PERCHES_PER_PAGE;
+    this.slots.set(slot, b);
+  }
+
+  // Takes the bird off its perch (it remembers the perch as home).
+  remove(b: BirdRecord): boolean {
+    if (!this.contains(b)) return false;
+    this.slots.delete(PenModel.slotIndex(b.page, b.perch));
+    return true;
+  }
+
+  unlockNextPage(): boolean {
+    if (this.unlockedPages >= this.maxPages) return false;
+    this.unlockedPages++;
+    return true;
+  }
+}
+EOF
+
+cat > nest.ts << 'EOF'
+import { BirdRecord } from "./birdRecord";
+import { breed, type Genotype } from "./genotype";
+import { clutchMultiplier, createChick, inbreedingCoefficient } from "./pedigree";
+import * as rng from "./rng";
+
+export type NestState = "empty" | "laying" | "incubating" | "growing" | "done";
+
+// One nest box. Progress is computed from timestamps (ms since epoch) passed in
+// by the caller, so it keeps "running" while the player is on another page, and
+// tests can fast-forward time.
+// Flow: place male + female -> clutch is rolled (size shrinks with inbreeding)
+// -> laying -> incubating -> growing -> done -> hatch() creates chicks (once)
+// -> release() hands the parents back and empties the nest.
+export class Nest {
+  male: BirdRecord | null = null;
+  female: BirdRecord | null = null;
+
+  layMin = 5; layMax = 15; // seconds
+  hatchTime = 10;
+  growTime = 15;
+  minClutchSize = 1;
+  maxClutchSize = 4;
+
+  inbreeding = 0;
+  started = false;
+
+  private clutch: Genotype[] = [];
+  private layEnd = 0;
+  private hatchEnd = 0;
+  private growEnd = 0;
+  private _chicks: BirdRecord[] | null = null;
+
+  get clutchSize(): number { return this.clutch.length; }
+  get hatched(): boolean { return this._chicks !== null; }
+  get chicks(): readonly BirdRecord[] { return this._chicks ?? []; }
+  get parentCount(): number { return (this.male ? 1 : 0) + (this.female ? 1 : 0); }
+
+  canPlace(b: BirdRecord): boolean {
+    if (this.started || !b.canBreed) return false;
+    return b.sex === "male" ? this.male === null : this.female === null;
+  }
+
+  place(b: BirdRecord, nowMs: number): boolean {
+    if (!this.canPlace(b)) return false;
+    if (b.sex === "male") this.male = b; else this.female = b;
+    if (this.male && this.female) this.start(nowMs);
+    return true;
+  }
+
+  private start(nowMs: number): void {
+    const male = this.male!, female = this.female!;
+    this.inbreeding = inbreedingCoefficient(male.pedigree, female.pedigree);
+
+    const effectiveMax = Math.max(
+      this.minClutchSize,
+      Math.round(this.maxClutchSize * clutchMultiplier(this.inbreeding)),
+    );
+    const size = rng.range(this.minClutchSize, effectiveMax + 1);
+
+    this.clutch = [];
+    for (let i = 0; i < size; i++) this.clutch.push(breed(female.genotype, male.genotype, rng.randomSex()));
+
+    const layDelay = this.layMin + rng.value() * (this.layMax - this.layMin);
+    this.layEnd = nowMs + layDelay * 1000;
+    this.hatchEnd = this.layEnd + this.hatchTime * 1000;
+    this.growEnd = this.hatchEnd + this.growTime * 1000;
+    this.started = true;
+  }
+
+  stateAt(nowMs: number): NestState {
+    if (!this.started) return "empty";
+    if (nowMs < this.layEnd) return "laying";
+    if (nowMs < this.hatchEnd) return "incubating";
+    if (nowMs < this.growEnd) return "growing";
+    return "done";
+  }
+
+  secondsRemaining(nowMs: number): number {
+    if (!this.started || this.stateAt(nowMs) === "done") return 0;
+    return Math.max(0, (this.growEnd - nowMs) / 1000);
+  }
+
+  // Creates the chicks the first time it's called once the nest is done; afterwards
+  // returns the same list. null if not ready. Counts one breeding per parent.
+  hatch(nowMs: number): readonly BirdRecord[] | null {
+    if (this._chicks) return this._chicks;
+    if (this.stateAt(nowMs) !== "done") return null;
+
+    const male = this.male!, female = this.female!;
+    this._chicks = this.clutch.map((g) => new BirdRecord(g, createChick(female.pedigree, male.pedigree)));
+    male.pedigree.breedCount++;
+    female.pedigree.breedCount++;
+    return this._chicks;
+  }
+
+  // Hands the parents back and empties the nest. Handle the chicks BEFORE calling this.
+  release(): { male: BirdRecord | null; female: BirdRecord | null } {
+    const parents = { male: this.male, female: this.female };
+    this.male = null;
+    this.female = null;
+    this._chicks = null;
+    this.clutch = [];
+    this.inbreeding = 0;
+    this.started = false;
+    return parents;
+  }
+}
+EOF
+
+cat > gameModel.ts << 'EOF'
+import { BirdRecord } from "./birdRecord";
+import { DiscoveryBook } from "./discoveryBook";
+import type { Sex } from "./genes";
+import { Nest } from "./nest";
+import { PenModel } from "./penModel";
+import { NORMAL_KEY } from "./phenotype";
+import * as rng from "./rng";
+import { generateRandomGenotype } from "./spawner";
+
+export const NEST_COUNT = 3;
+
+export interface NestOutcome {
+  chicks: readonly BirdRecord[];
+  newCombinations: string[]; // first time ever BRED (drives page unlocks)
+  pagesUnlocked: number;
+}
+
+// The whole game state and rules, independent of any UI.
+// Capacity rule: parents in a nest box still reserve their perch, so they can
+// always return and the pen can never overflow.
+// Unlock rule: each NEW combination produced by BREEDING counts toward unlocking
+// the next aviary page. Birds from "Add Bird" are discoveries but never unlock.
+export class GameModel {
+  readonly pen: PenModel;
+  readonly book = new DiscoveryBook();
+  readonly nests: Nest[] = Array.from({ length: NEST_COUNT }, () => new Nest());
+
+  combosPerPageUnlock = 1; // 1 = every new combination unlocks a page
+
+  private bredCombos = new Set<string>();
+  private comboProgress = 0;
+  private unseenPageUnlocks = 0;
+
+  constructor(maxPages = 10) {
+    this.pen = new PenModel(maxPages);
+  }
+
+  get birdsInNests(): number { return this.nests.reduce((n, nest) => n + nest.parentCount, 0); }
+  get freePerches(): number { return this.pen.capacity - this.pen.count - this.birdsInNests; }
+
+  newGame(starterBirds: number): void {
+    for (let i = 0; i < starterBirds; i++) this.addRandomBird(i % 2 === 0 ? "male" : "female");
+  }
+
+  // The "Add Bird" button. null when there is no free perch.
+  addRandomBird(forcedSex?: Sex): BirdRecord | null {
+    if (this.freePerches <= 0) return null;
+    const bird = new BirdRecord(generateRandomGenotype(forcedSex ?? rng.randomSex()));
+    this.pen.tryAdd(bird);
+    this.book.report(bird.phenotype);
+    return bird;
+  }
+
+  sellBird(b: BirdRecord): boolean {
+    // TODO: hook into an economy once you build one
+    return this.pen.remove(b);
+  }
+
+  moveToNest(nestIndex: number, b: BirdRecord, nowMs: number): boolean {
+    const nest = this.nests[nestIndex];
+    if (!nest || !this.pen.contains(b) || !nest.canPlace(b)) return false;
+    this.pen.remove(b);
+    nest.place(b, nowMs);
+    return true;
+  }
+
+  // Call when a nest reaches "done". Safe to call repeatedly: discoveries and
+  // unlocks only count the first time. null if the clutch isn't ready.
+  collectNest(nestIndex: number, nowMs: number): NestOutcome | null {
+    const nest = this.nests[nestIndex];
+    const first = !nest.hatched;
+    const chicks = nest.hatch(nowMs);
+    if (!chicks) return null;
+
+    const outcome: NestOutcome = { chicks, newCombinations: [], pagesUnlocked: 0 };
+    if (!first) return outcome;
+
+    for (const chick of chicks) {
+      this.book.report(chick.phenotype);
+      if (chick.phenotype.key !== NORMAL_KEY && !this.bredCombos.has(chick.phenotype.key)) {
+        this.bredCombos.add(chick.phenotype.key);
+        outcome.newCombinations.push(chick.displayName);
+        this.comboProgress++;
+      }
+    }
+
+    const perUnlock = Math.max(1, this.combosPerPageUnlock);
+    while (this.comboProgress >= perUnlock) {
+      this.comboProgress -= perUnlock;
+      if (!this.pen.unlockNextPage()) { this.comboProgress = 0; break; }
+      outcome.pagesUnlocked++;
+      this.unseenPageUnlocks++;
+    }
+    return outcome;
+  }
+
+  // Parents return to the pen, chicks in `keep` join while there is room, the rest
+  // are sold. Returns the number sold, or -1 if the clutch isn't hatched.
+  resolveNest(nestIndex: number, keep: Iterable<BirdRecord> = []): number {
+    const nest = this.nests[nestIndex];
+    if (!nest.hatched) return -1;
+
+    const chicks = [...nest.chicks];
+    const { male, female } = nest.release();
+    if (!male || !female || !this.pen.tryAdd(male) || !this.pen.tryAdd(female))
+      throw new Error("No perch for a returning parent - capacity accounting bug.");
+
+    const keepSet = new Set(keep);
+    let sold = 0;
+    for (const chick of chicks) {
+      if (keepSet.has(chick) && this.freePerches > 0 && this.pen.tryAdd(chick)) continue;
+      sold++; // TODO: pay out once there is an economy
+    }
+    return sold;
+  }
+
+  // How many pages unlocked since the player last looked at the aviary.
+  consumeUnlockNotice(): number {
+    const n = this.unseenPageUnlocks;
+    this.unseenPageUnlocks = 0;
+    return n;
+  }
+}
+EOF
+
+cat > index.ts << 'EOF'
+export * from "./genes";
+export * as rng from "./rng";
+export * from "./genotype";
+export * from "./phenotype";
+export * from "./pedigree";
+export * from "./spawner";
+export * from "./birdRecord";
+export * from "./discoveryBook";
+export * from "./penModel";
+export * from "./nest";
+export * from "./gameModel";
+EOF
+echo ok
+Output
+
+ok

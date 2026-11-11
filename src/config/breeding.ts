@@ -1,0 +1,7 @@
+export const BREEDING_CONFIG = {
+  INCUBATION_DURATION_MS: 6 * 60 * 60 * 1000, // 6 Hours
+  MATURATION_DURATION_MS: 6 * 60 * 60 * 1000, // 6 Hours
+  CLUTCH_MIN_SIZE: 3,
+  CLUTCH_MAX_SIZE: 5,
+  BREEDING_COOLDOWN_MS: 12 * 60 * 60 * 1000, // 12 Hours post-fledge
+};

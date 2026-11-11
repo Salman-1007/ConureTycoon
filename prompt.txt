@@ -1,0 +1,91 @@
+MASTER ARCHITECTURAL SPECIFICATION & BUILD DIRECTIVEPROJECT CODENAME: Green Cheek Conure Tycoon (GCCT)ROLE: Principal Software Systems & Game Engine ArchitectTARGET ENVIRONMENT: AntiGravity / Full-Stack Autonomous Build EngineDIRECTIVE TYPE: Full Production Conversion, Genetics Modeling & Multi-Agent ImplementationEXECUTIVE ARCHITECTURAL SUMMARYYou are transforming an existing, functional Pigeon Game repository into a biologically precise, player-driven Green Cheek Conure (Pyrrhura molinae) Breeding Simulator and Economy.Your operational standard is zero regressions on working plumbing, zero superficial or mock-up code, and deterministic, server-authoritative biological modeling. You are adapting an existing code base: inspect its foundations, preserve its functional plumbing (authentication, wallets, persistent sessions, UI components), discard all homing/flying racing subsystems, and mount an authentic avian genetics and discovery engine.PART I: PRE-FLIGHT REPOSITORY AUDIT & PRESERVATION PROTOCOLBefore modifying files, creating schemas, or writing business logic, conduct an automated inventory of the existing codebase.1. Codebase Discovery & Dependency MappingMap all frontend routes, application views, layout shells, and state management stores (e.g., Redux, Zustand, Context).Map all backend controllers, HTTP routes, WebSocket handlers, and middleware chains.Inspect the database layer: extract existing models for users, wallets/balances, inventories, items, and ownership associations.2. Feature Retention & Deletion Contract[KEEP INTACT] ── User Auth, Wallets/Coins, Session Persistence, Base UI Shells, Modals, Responsive Layouts.
+[REFACTOR]    ── Rename Loft/Coop -> Aviary; Ring Band -> Closed Leg Band; Flight/Racing Stats -> Aviary Traits.
+[PURGE]       ── All homing flight simulations, release/trap mechanisms, distance/speed calculations, weather/sky races.
+[INJECT NEW]  ── Mendelian/Sex-linked Genetics Engine, 60-min Dynamic Marketplace, Gene Discovery Compendium, Pedigree Explorer, Bird Showroom.
+3. Deliverable Before ModificationGenerate an internal audit report:preserved_endpoints.md: Functional APIs reused without modification.schema_migrations.sql: Incremental table additions without dropping historical player profiles.compatibility_shim.ts: Type adaptors mapping legacy bird records to the new conure entity.PART II: GREEN CHEEK CONURE GENETICS ENGINE (BIOLOGICAL CORE)Never determine bird appearance through arbitrary roll tables or cosmetic skin assignment. Phenotype and hidden split carriers must derive mathematically from chromosomal loci.       MALE (ZZ)                               FEMALE (ZW)
+┌───────────────────────┐               ┌───────────────────────┐
+│ Z Chromosome (Sire 1) │               │ Z Chromosome (Sire)   │
+├───────────────────────┤               ├───────────────────────┤
+│ Z Chromosome (Sire 2) │               │ W Chromosome (Dam)    │
+└───────────────────────┘               └───────────────────────┘
+  (Can be Homozygous,                     (Hemizygous: Always
+   Heterozygous, or Split)                 Expresses Z Mutations)
+1. Avian Chromosomal & Locus RulesSex Chromosomes:Males ($ZZ$): Homogametic. Require two copies of a sex-linked mutant allele to express visually. A single copy produces an unexpressed carrier (split / /gene).Females ($ZW$): Heterogametic. The $W$ chromosome carries no homologous alleles for these traits. Any mutant allele on her single $Z$ chromosome expresses visually immediately. Females can never be split for sex-linked mutations.Autosomal Loci:Located on non-sex chromosomes. Independent assortment applies equally to both sexes.Homozygous ($mut/mut$): Visual expression.Heterozygous ($+/mut$): Phenotypically normal wild-type, carrying an unexpressed split.2. Supported Mutations & Allelic NomenclatureNote: Recessive Pied is explicitly omitted from this release.MutationGene KeyChromosomeInheritance ModeVisual PhenotypeNormal GreenWTWild-type ($Z^+$, $aut^+$)Dominant BaselineOlive green body, dark grey crown, scaled chest, dark beak, maroon tailCinnamonCINSex-chromosome ($Z^{cin}$)Sex-linked RecessiveMelanin reduction: pastel lime plumage, fawn crown, flesh beak/feet, plum eyes at hatchYellow-SidedOPSex-chromosome ($Z^{op}$)Sex-linked RecessiveOpaline locus: dark head, dark beak, brilliant yellow chest with deep crimson centerPineapplePINESex-chromosome ($Z^{cin,op}$)Crossover RecombinantCombines Cinnamon and Yellow-Sided: light crown, light beak, radiant red/yellow breastTurquoiseTQAutosome ($tq$)Autosomal RecessiveParablue: complete removal of yellow/red psittacin; teal/blue-green body, silver-grey chest, dark slate tailAmerican DiluteDILAutosome ($dil$)Autosomal RecessiveMelanin reduction (80–90%): pale lime-yellow body, frosted fawn head, horn/flesh beakSuncheekSUNCHKMulti-locus ComboVisual CIN + OP + DILBright yellow wings, flame orange-red/yellow breast, light fawn crown, pale flesh beak/feetMintMINTAutosomal ComboVisual TQ + DILPlatinum pastel teal-blue, frosty silver head, pale horn beak, soft slate tailTurquoise CinnamonTQ_CINSex + AutosomalVisual TQ + CINSoft muted seafoam/teal plumage, fawn/tan crown, pale horn beak, silver-bronze tailTurquoise Yellow-SidedTQ_YSSex + AutosomalVisual TQ + OPTeal/blue-green body, dark head/beak, apricot/pastel yellow breast washTurquoise PineappleTQ_PINEMulti-locus ComboVisual TQ + CIN + OPPastel teal flights, light head/beak, soft peach-yellow breast, coral-cream tailMooncheekMOONCHKMulti-locus 4-wayVisual TQ + DIL + CIN + OPPlatinum ice-blue/cream body, softest pink breast wash, bone beak, pale pink feet3. Recombination & Crossover Mechanics (Pineapple Locus)Because Cinnamon (CIN) and Yellow-Sided (OP) both reside on the avian $Z$ chromosome, they do not sort independently.Model genetic linkage with a recombinant crossover rate:$$r = 0.25 \quad (25\% \text{ chance of crossing over during meiosis in heterozygous males } Z^{cin, +} / Z^{+, op})$$Coupling (Cis) phase ($Z^{cin, op} / Z^{+, +}$): Recombination separates the linked traits into single-mutation gametes ($Z^{cin}$ or $Z^{op}$) at rate $r$.Repulsion (Trans) phase ($Z^{cin, +} / Z^{+, op}$): Recombination creates wild-type ($Z^{+, +}$) or dual-mutant ($Z^{cin, op}$ - Pineapple) gametes at rate $r$.4. Mathematical Inheritance Protocol (Execution Loop)TypeScriptinterface Gamete {
+  sexChromosome: 'Z' | 'W';
+  zGenes: { cinnamon: boolean; opaline: boolean };
+  autosomal: { turquoise: boolean; dilute: boolean };
+}
+
+interface BirdGenotype {
+  sex: 'MALE' | 'FEMALE';
+  zChromosomes: [Gamete['zGenes'], Gamete['zGenes']?]; // 2 for Male (ZZ), 1 for Female (ZW)
+  autosomalLoci: {
+    turquoise: [boolean, boolean]; // [maternal_allele, paternal_allele]
+    dilute: [boolean, boolean];
+  };
+}
+For every egg conceived:Generate one gamete from Sire ($Z_1$ or $Z_2$ subject to crossover, plus one random allele from each autosomal pair).Generate one gamete from Dam ($Z$ or $W$ with 50/50 probability, plus one random allele from each autosomal pair).Combine gametes to form the zygote genotype.Derive:Visual Phenotype: Match homozygous alleles (or hemizygous $Z$ alleles in females) against the Expression Catalogue.Carrier Splits: Any heterozygous allele pair not visually expressed is registered in the hidden split ledger.PART III: DYNAMIC GENE DISCOVERY ("FOG OF WAR") ENGINEPlayers must not possess supernatural knowledge of a bird's hidden genetics upon purchase or hatch.1. Phenotypic Visibility StatesCONFIRMED: Mutation is visually expressed or definitively proven by test-breeding records.INFERRED: Probabilistic carrier based on verified visual parents (e.g., child of a visual Turquoise parent is guaranteed 100% split carrier; child of split parents is marked "67% Possible Split").MASKED: Allele carried on an ordinary market bird, hidden from user view.2. Player Discovery Compendium & Retroactive Reveal TriggerMaintain a relational table: user_discovered_genes(user_id, gene_key, unlocked_at).Initial Aviary State: A player begins with only NORMAL_GREEN unlocked.The Discovery Event: When a player hatches a chick in their aviary that visually expresses a recessive or sex-linked mutation for the first time:Commit gene_key to user_discovered_genes.Fire a background transactional database job:SQL-- Pseudo-logic: Retroactively expose unlocked gene across current aviary inventory
+UPDATE bird_phenotype_views 
+SET displayed_splits = array_append(displayed_splits, :newlyDiscoveredGene)
+WHERE current_owner_id = :userId 
+  AND actual_genotype_splits @> ARRAY[:newlyDiscoveredGene]
+  AND NOT (displayed_splits @> ARRAY[:newlyDiscoveredGene]);
+Dispatch an in-game notification: "Genomic Breakthrough: Your aviary has unlocked the [Mutation] gene! Hidden carriers across your flock are now identified."PART IV: SERVER-AUTHORITATIVE HOURLY MARKETPLACEThe economy is protected against client-side manipulation, time drift, and race conditions.1. Market Generation & Cron ArchitectureClock Schedule: Every hour on the hour (:00 UTC), a server worker wipes unsold system listings and creates exactly 10 new conures.Server Clock Authority: The marketplace state is calculated strictly against server timestamp UTC. Client devices query the API for time deltas; local clock changes do not shift countdowns.2. Spawn Probability DistributionEvery system-spawned bird passes through this distribution curve:TOTAL SYSTEM SPAWNS (100%)
+├── 80% Common Base
+│   ├── 50% Absolute Pure Normal Green (Wild-type, zero splits)
+│   └── 30% Split Carriers (Visual Normal Green, 1–2 masked autosomal/sex-linked splits)
+└── 20% Visual Mutations
+    ├── 10% Intermediate Visuals (Yellow-Sided or Pineapple)
+    └── 10% Rare Visuals (Turquoise, Cinnamon, Dilute, Suncheek, Mint, Mooncheek, etc.)
+3. Pricing Matrix with $\pm 20\%$ Market VarianceEvery market-spawned bird calculates its listing price with a $\pm 20\%$ variance ($0.80$ to $1.20$), rounded to clean intervals:$$\text{Final Price} = \text{round\_to\_50}\Big(\text{Base Price} \times \text{random\_uniform}(0.80, 1.20)\Big)$$System Pricing Reference:MutationBase Price (Coins)Minimum (-20%)Maximum (+20%)Normal Green (GCC)3,5002,8004,200Yellow-Sided4,0003,2004,800Pineapple4,0003,2004,800Cinnamon4,0003,2004,800Turquoise10,0008,00012,000Turquoise Cinnamon12,0009,60014,400Turquoise Yellow-Sided12,0009,60014,400Turquoise Pineapple14,00011,20016,800American Dilute20,00016,00024,000Mint25,00020,00030,000Suncheek50,00040,00060,000Mooncheek50,00040,00060,000Split Carrier Premium: Birds in the 30% split-carrier pool receive a small pricing offset (+5% to +10%) within the allowed range. Savvy breeders can analyze market anomalies to identify potential split carriers.4. Anti-Race Condition Purchase HandlerEnforce row-level locking on market purchases to prevent duplicate buys:SQLBEGIN TRANSACTION;
+SELECT id, price, status FROM market_listings WHERE id = :listingId AND status = 'ACTIVE' FOR UPDATE;
+-- Verify buyer balance >= price
+-- Deduct buyer balance
+-- Insert into user_aviary_inventory
+-- UPDATE market_listings SET status = 'SOLD', buyer_id = :userId WHERE id = :listingId;
+COMMIT;
+PART V: BREEDING FACILITY & LIFECYCLE MANAGEMENT1. Mating Pair Validation RulesA breeding cage assignment must pass these checks:Must contain exactly 1 verified Male ($ZZ$) and 1 verified Female ($ZW$).Neither bird may be currently listed on the marketplace.Birds must have completed their maturation phase (no juveniles).Inbreeding Coefficient (COI) check: Warn if common ancestors appear within 3 generations ($F \ge 0.125$).2. Configurable Breeding TimersSet all timers in a single configuration file (src/config/breeding.ts) for easy tuning during testing:TypeScriptexport const BREEDING_CONFIG = {
+  INCUBATION_DURATION_MS: 6 * 60 * 60 * 1000, // 6 Hours
+  MATURATION_DURATION_MS: 6 * 60 * 60 * 1000, // 6 Hours
+  CLUTCH_MIN_SIZE: 3,
+  CLUTCH_MAX_SIZE: 5,
+  BREEDING_COOLDOWN_MS: 12 * 60 * 60 * 1000,  // 12 Hours post-fledge
+};
+PART VI: PEDIGREE LEDGER & AVIARY IDENTITYEvery bird has an immutable origin. Ownership transfers do not modify biological parentage or breeder provenance.1. Relational Data Model┌─────────────────────────────────────────────────────────────┐
+│                         BIRDS                               │
+├─────────────────────────────────────────────────────────────┤
+│ id: UUID (PK)                                               │
+│ leg_band: VARCHAR(32) UNIQUE (e.g. GCC-2026-A8F2)          │
+│ sex: ENUM('MALE', 'FEMALE')                                 │
+│ visual_phenotype: VARCHAR(64)                               │
+│ chromosome_payload: JSONB                                   │
+│ displayed_splits: TEXT[]                                    │
+│ father_id: UUID (FK -> birds.id, NULLABLE)                    │
+│ mother_id: UUID (FK -> birds.id, NULLABLE)                     │
+│ original_breeder_id: UUID (FK -> users.id)                  │
+│ original_breeder_name: VARCHAR(64)                          │
+│ current_owner_id: UUID (FK -> users.id)                     │
+│ hatch_timestamp: TIMESTAMP WITH TIME ZONE                   │
+│ generation_depth: INTEGER                                   │
+└─────────────────────────────────────────────────────────────┘
+2. Pedigree Viewer ComponentRender an interactive 3-generation family tree component:                      ┌── Paternal Grand-Sire
+           ┌── father ──┤
+           │          └── Paternal Grand-Dam
+Subject ───┤
+           │          ┌── Maternal Grand-Sire
+           └── mother───┤
+                      └── Maternal Grand-Dam
+Clicking any node opens an inspection panel showing leg band, breeder of record, visual phenotype, and confirmed splits.Cycle Detection: Enforce constraints preventing a bird from being assigned as its own ancestor.PART VII: PLAYER-TO-PLAYER TRADING & AVIARY SHOWROOM1. Player-to-Player Trading PostIndependent from the system market.Players list their own birds at custom prices without system caps.Pedigrees and verified breeder histories are publicly visible to buyers prior to purchase.Unmasked splits remain subject to the buyer's personal discovery state.2. Aviary Exhibition Showroom (Replaces Pigeon Racing)Replace all pigeon racing endpoints with an exhibition arena:Show Categories: Novice Class, Color Mutation Class, Master Pedigree Class.Deterministic Judge Scoring Algorithm:$$\text{Score} = (\text{Plumage Symmetry} \times 0.3) + (\text{Mutation Rarity Score} \times 0.4) + (\text{Lineage Purity Bonus} \times 0.3)$$Rewards: Seasonal leaderboards, prestige trophies, and breeder badges displayed on player profiles (e.g., "Master Turquoise Breeder 2026").PART VIII: VISUAL ASSET MATRIX FOR UI CARDSEvery bird card in the inventory, marketplace, and showroom must display mutation-accurate imagery against a clean studio white background:src/assets/conures/
+├── normal_green.png         # Dark head, dark beak, scaled chest, maroon tail
+├── yellow_sided.png         # Dark head, brilliant yellow & ruby chest
+├── cinnamon.png             # Fawn head, flesh-toned beak, pastel lime body
+├── pineapple.png            # Light head, flesh beak, fiery flame chest
+├── turquoise.png            # Slate head, dark beak, sea-green/teal body, silver chest
+├── american_dilute.png      # 80-90% melanin dilution, lime-yellow body, flesh beak
+├── turquoise_cinnamon.png   # Fawn head, muted teal body, bronze/silver tail
+├── turquoise_yellow_sided.png # Dark head, dark beak, teal body, peach-yellow breast
+├── turquoise_pineapple.png  # Light head, flesh beak, pastel teal body, peach chest
+├── suncheek.png             # Solid yellow wings, fiery orange-red breast, coral tail
+├── mint.png                 # Frosted platinum-teal body, silvery head, horn beak
+└── mooncheek.png            # Ice-blue/cream body, soft pink blush, bone-colored beak
+PART IX: 10-STAGE SYSTEM ROLLOUT ROADMAPExecute implementation sequentially. At the end of each stage, run verification tests and report status:STAGE 1: Codebase Audit & PreservationInspect the pigeon game. Generate the preservation checklist and isolate reusable components.STAGE 2: Genetics Engine BuildImplement the standalone genotype calculation engine. Validate against real-world GCC breeding charts with automated test suites.STAGE 3: Database MigrationExecute schema updates for conure genotypes, market timers, pedigree records, and user discovery ledgers.STAGE 4: System Marketplace ImplementationDeploy the server-authoritative 60-minute cron, spawn distribution curves, $\pm 20\%$ price variances, and purchase locks.STAGE 5: Breeding Pipeline & Timer SetupImplement breeding cage pairing, 6-hour incubation countdowns, clutch size rolls, and inbreeding checks.STAGE 6: Fog of War & Discovery TriggersImplement split-gene masking and the automatic retroactive aviary unmasking trigger upon new visual hatches.STAGE 7: Pedigree Explorer ComponentDeploy the 3-generation pedigree tree visualizer with cycle-prevention logic.STAGE 8: P2P Trading Post & ShowroomDeploy the player-to-player listing system and the exhibition showroom scoring engine.STAGE 9: Visual Asset IntegrationLink conure display imagery to phenotypes across all cards, inspection views, and trading interfaces.STAGE 10: System Integration & Stress TestingExecute concurrent purchase simulations, verify cross-generational genetic consistency across 1,000 simulated clutches, and confirm zero regressions in preserved systems.

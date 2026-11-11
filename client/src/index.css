@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Fraunces", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    overflow-x: hidden;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background:
+      radial-gradient(1200px 600px at 15% -10%, rgba(74, 124, 89, 0.16), transparent 60%),
+      radial-gradient(900px 500px at 90% 0%, rgba(200, 146, 42, 0.12), transparent 55%),
+      #111914;
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+
+  /* Prevent iOS Safari auto-zoom on form controls < 16px */
+  @media (max-width: 640px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px !important;
+    }
+  }
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.brass-panel {
+  background: linear-gradient(180deg, rgba(35, 48, 39, 0.96) 0%, rgba(24, 34, 27, 0.98) 100%);
+  border: 1px solid rgba(200, 146, 42, 0.36);
+  box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(232, 184, 75, 0.12);
+}
+
+.studio-frame {
+  background-color: #ffffff;
+  border: 1px solid rgba(200, 146, 42, 0.45);
+}
