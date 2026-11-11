@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS birds (
   original_breeder_name TEXT NOT NULL,
   current_owner_id TEXT REFERENCES users(id), -- NULL while held in system market
   hatch_timestamp INTEGER NOT NULL,
+  genetics_reveal_at INTEGER NOT NULL DEFAULT 0,
+  genetics_processed INTEGER NOT NULL DEFAULT 1,
   maturation_timestamp INTEGER NOT NULL,
   cooldown_until INTEGER NOT NULL DEFAULT 0,
   generation_depth INTEGER NOT NULL DEFAULT 1 CHECK (generation_depth >= 1),
@@ -98,9 +100,11 @@ CREATE TABLE IF NOT EXISTS breeding_cages (
   female_id TEXT NOT NULL REFERENCES birds(id),
   inbreeding_coi REAL NOT NULL DEFAULT 0,
   coi_warning INTEGER NOT NULL DEFAULT 0,
-  clutch_payload TEXT NOT NULL, -- JSON array of pre-conceived zygote genotypes
+  clutch_payload TEXT NOT NULL, -- JSON array of pre-conceived zygote genotypes / specs
   started_at INTEGER NOT NULL,
+  laid_at INTEGER NOT NULL DEFAULT 0,
   hatch_ready_at INTEGER NOT NULL,
+  fostered_count INTEGER NOT NULL DEFAULT 0,
   hatched INTEGER NOT NULL DEFAULT 0,
   hatched_at INTEGER
 );

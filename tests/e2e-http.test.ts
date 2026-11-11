@@ -1,15 +1,17 @@
 import http from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../server/app.js';
-import { createDatabase } from '../server/db.js';
+import { SESSION_TTL_MS, createSession } from '../server/auth.js';
+import { type AppDatabase, createDatabase } from '../server/db.js';
 
 describe('Stage 10 HTTP End-to-End & Concurrent Stress Tests', () => {
-  const db = createDatabase(':memory:');
-  const app = createApp(db);
+  let db: AppDatabase;
   let server: http.Server;
   let baseUrl = '';
 
   beforeAll(async () => {
+    db = await createDatabase(':memory:');
+    const app = createApp(db);
     await new Promise<void>((resolve) => {
       server = app.listen(0, '127.0.0.1', () => {
         const addr = server.address() as { port: number };
@@ -21,7 +23,7 @@ describe('Stage 10 HTTP End-to-End & Concurrent Stress Tests', () => {
 
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    db.close();
+    await db.close();
   });
 
   it('handles full HTTP registration, concurrent market buys, breeding timers, pedigree, P2P, and showroom', async () => {
@@ -104,8 +106,24 @@ describe('Stage 10 HTTP End-to-End & Concurrent Stress Tests', () => {
     const premature = await postJson(`/api/breeding/collect/${cageId}`, {}, tokenA);
     expect(premature.status).toBe(400);
 
-    // Advance dev time +6h and hatch
-    const adv = await postJson('/api/dev/advance-time', { hours: 6 }, tokenA);
+    // Non-admin user must receive 403 on Test Lab dev time controls
+    const nonAdminAdv = await postJson('/api/dev/advance-time', { hours: 12 }, tokenA);
+    expect(nonAdminAdv.status).toBe(403);
+    expect(regA.json.user.devToolsEnabled).toBe(false);
+
+    // Admin (salman) advances dev time +12h (1-6h lay window + 6h incubation) and hatches
+    const regAdmin = await postJson('/api/auth/register', {
+      username: 'salman',
+      password: 'password123',
+      displayName: 'Salman Admin',
+      aviaryName: 'Salman Sanctum',
+    });
+    expect(regAdmin.status).toBe(201);
+    expect(regAdmin.json.user.isAdmin).toBe(true);
+    expect(regAdmin.json.user.devToolsEnabled).toBe(true);
+    const adminToken = regAdmin.json.token as string;
+
+    const adv = await postJson('/api/dev/advance-time', { hours: 12 }, adminToken);
     expect(adv.status).toBe(200);
 
     const hatch = await postJson(`/api/breeding/collect/${cageId}`, {}, tokenA);
@@ -113,7 +131,7 @@ describe('Stage 10 HTTP End-to-End & Concurrent Stress Tests', () => {
     expect(hatch.json.chicks.length).toBeGreaterThanOrEqual(3);
     expect(hatch.json.chicks.length).toBeLessThanOrEqual(5);
 
-    // Inspect 3-Gen Pedigree of a newly hatched chick
+    // Inspect 3-Gen Pedigree of a newly hatched chick (remains downy until +3h)
     const chickId = hatch.json.chicks[0].id as string;
     const ped = await getJson(`/api/birds/${chickId}/pedigree`, tokenA);
     expect(ped.status).toBe(200);
@@ -121,8 +139,7 @@ describe('Stage 10 HTTP End-to-End & Concurrent Stress Tests', () => {
     expect(ped.json.tree.mother.id).toBe(femaleA.id);
 
     // 4. P2P Trading Post List + Buy between Alice and Bob
-    // Advance +12h so parents exit breeding cooldown, and list third starter bird Pebble
-    await postJson('/api/dev/advance-time', { hours: 12 }, tokenA);
+    // List third starter bird Pebble directly (and parents have zero cooldown!)
     const pebble = aviaryA.json.birds.find((b: any) => b.name === 'Pebble');
     const p2pCreate = await postJson(
       '/api/market/p2p',
@@ -171,5 +188,39 @@ describe('Stage 10 HTTP End-to-End & Concurrent Stress Tests', () => {
     } finally {
       process.env.NODE_ENV = prevEnv;
     }
+  });
+
+  it('sets session cookies and database sessions to expire after 10 days', async () => {
+    const tenDaysMs = 10 * 24 * 60 * 60 * 1000;
+    expect(SESSION_TTL_MS).toBe(tenDaysMs);
+
+    const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'http_alice', password: 'password123' }),
+    });
+    expect(loginRes.status).toBe(200);
+    const setCookie = loginRes.headers.get('set-cookie') ?? '';
+    expect(setCookie).toContain('Max-Age=864000');
+
+    const loginJson = await loginRes.json();
+    const row = await db.get<{ user_id: string; created_at: number; expires_at: number }>(
+      'SELECT user_id, created_at, expires_at FROM sessions WHERE token = ?',
+      loginJson.token,
+    );
+    expect(row).toBeTruthy();
+    expect(row!.expires_at - row!.created_at).toBe(tenDaysMs);
+
+    const nearExpiryToken = await createSession(db, row!.user_id, Date.now() - (tenDaysMs - 60_000));
+    const nearExpiryMe = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${nearExpiryToken}` },
+    });
+    expect(nearExpiryMe.status).toBe(200);
+
+    const expiredToken = await createSession(db, row!.user_id, Date.now() - (tenDaysMs + 1_000));
+    const expiredMe = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${expiredToken}` },
+    });
+    expect(expiredMe.status).toBe(401);
   });
 });

@@ -170,11 +170,11 @@ export function TradingPostPage() {
       {/* Pedigree Inspection Modal prior to purchase */}
       {inspecting && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4"
           onClick={() => setInspecting(null)}
         >
           <div
-            className="brass-panel max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl p-6 space-y-5"
+            className="brass-panel max-h-[92dvh] w-full max-w-3xl overflow-y-auto rounded-t-2xl p-4 sm:rounded-2xl sm:p-6 space-y-5"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-[#C8922A]/25 pb-3">
@@ -220,13 +220,13 @@ export function TradingPostPage() {
       {/* Create P2P Listing Modal */}
       {createOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4"
           onClick={() => setCreateOpen(false)}
         >
           <form
             onSubmit={handleCreateListing}
             onClick={(e) => e.stopPropagation()}
-            className="brass-panel w-full max-w-md rounded-2xl p-6 space-y-4"
+            className="brass-panel max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-t-2xl p-5 sm:rounded-2xl sm:p-6 space-y-4"
           >
             <div className="flex items-center justify-between">
               <h2 className="font-display text-xl font-bold text-[#F6EFE2]">Create P2P Listing</h2>

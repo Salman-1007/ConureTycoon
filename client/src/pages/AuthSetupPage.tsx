@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Feather, Lock, Sparkles, UserPlus } from 'lucide-react';
+import { Coffee, Feather, Lock, Sparkles, UserPlus } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import { useGame } from '../context/GameContext';
 import { formatCoins } from '../components/format';
@@ -14,7 +14,7 @@ const SHOWCASE_IMAGES = [
 ];
 
 export function AuthSetupPage() {
-  const { refreshAll, pushToast } = useGame();
+  const { refreshAll, pushToast, setSupportOpen } = useGame();
   const [mode, setMode] = useState<'register' | 'login'>('register');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -199,6 +199,15 @@ export function AuthSetupPage() {
             >
               <Feather className="h-4 w-4" />
               {busy ? 'Opening Aviary...' : mode === 'register' ? 'Establish Aviary & Begin' : 'Enter Saved Aviary'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSupportOpen(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400/40 bg-[#1B2418] py-2.5 text-xs font-bold text-[#E8B84B] transition hover:border-[#E8B84B] hover:bg-[#243020]"
+            >
+              <Coffee className="h-4 w-4" />
+              Support the Creator (NayaPay 03324261998 · Global)
             </button>
           </form>
         </div>

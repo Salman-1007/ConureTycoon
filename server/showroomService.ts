@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
 import type { ShowroomLeaderboardRowDTO, ShowroomOverviewDTO } from '../shared/api-types.js';
 import { getMutationMeta } from '../shared/genetics/catalog.js';
 import { analyzeInbreeding, countKnownAncestorsWithin3Gen } from '../shared/genetics/pedigree.js';
@@ -13,7 +12,7 @@ import {
 import type { MutationKey } from '../shared/genetics/types.js';
 import { type BirdRow, computeLifecycleStatus, getLevelInfo, loadAllBirdsMap } from './birdHelpers.js';
 import { getServerClock } from './clock.js';
-import { withTransaction } from './db.js';
+import { type AppDatabase, type DbExecutor, withTransaction } from './db.js';
 
 export class ShowroomError extends Error {
   constructor(
@@ -29,20 +28,11 @@ export function getSeasonKey(nowMs: number): string {
   return `${year}`;
 }
 
-export function getShowroomOverview(db: DatabaseSync): ShowroomOverviewDTO {
-  const clock = getServerClock(db);
+export async function getShowroomOverview(db: DbExecutor): Promise<ShowroomOverviewDTO> {
+  const clock = await getServerClock(db);
   const seasonKey = getSeasonKey(clock.effectiveNowMs);
 
-  const rows = db
-    .prepare(
-      `SELECT se.*, u.display_name as breeder_name, u.aviary_name, b.name as bird_name, b.leg_band, b.visual_phenotype
-       FROM showroom_entries se
-       JOIN users u ON u.id = se.user_id
-       JOIN birds b ON b.id = se.bird_id
-       WHERE se.season_key = ?
-       ORDER BY se.total_score DESC, se.entered_at ASC`,
-    )
-    .all(seasonKey) as Array<{
+  const rows = await db.all<{
     id: string;
     season_key: string;
     category: ShowCategory;
@@ -60,7 +50,15 @@ export function getShowroomOverview(db: DatabaseSync): ShowroomOverviewDTO {
     bird_name: string;
     leg_band: string;
     visual_phenotype: MutationKey;
-  }>;
+  }>(
+    `SELECT se.*, u.display_name as breeder_name, u.aviary_name, b.name as bird_name, b.leg_band, b.visual_phenotype
+     FROM showroom_entries se
+     JOIN users u ON u.id = se.user_id
+     JOIN birds b ON b.id = se.bird_id
+     WHERE se.season_key = ?
+     ORDER BY se.total_score DESC, se.entered_at ASC`,
+    seasonKey,
+  );
 
   const mapRow = (r: (typeof rows)[number], rank: number): ShowroomLeaderboardRowDTO => ({
     entryId: r.id,
@@ -107,35 +105,40 @@ export function getShowroomOverview(db: DatabaseSync): ShowroomOverviewDTO {
   return { seasonKey, leaderboards, recentEntries };
 }
 
-export function enterShowroom(
-  db: DatabaseSync,
+export async function enterShowroom(
+  db: AppDatabase | DbExecutor,
   userId: string,
   birdId: string,
   category: ShowCategory,
-): {
+): Promise<{
   entry: ShowroomLeaderboardRowDTO;
   prizeCoins: number;
   xpAwarded: number;
   awardedBadge: { badgeKey: string; badgeTitle: string } | null;
-} {
+}> {
   const catInfo = SHOW_CATEGORIES[category];
   if (!catInfo) throw new ShowroomError('Invalid exhibition category.', 400);
 
-  const clock = getServerClock(db);
+  const clock = await getServerClock(db);
   const nowMs = clock.effectiveNowMs;
   const seasonKey = getSeasonKey(nowMs);
   const seasonYear = new Date(nowMs).getUTCFullYear();
 
-  return withTransaction(db, () => {
-    const user = db.prepare('SELECT id, display_name, aviary_name, coins, xp, best_show_score FROM users WHERE id = ?').get(userId) as
-      | { id: string; display_name: string; aviary_name: string; coins: number; xp: number; best_show_score: number }
-      | undefined;
+  return withTransaction(db, async (tx) => {
+    const user = await tx.get<{
+      id: string;
+      display_name: string;
+      aviary_name: string;
+      coins: number;
+      xp: number;
+      best_show_score: number;
+    }>('SELECT id, display_name, aviary_name, coins, xp, best_show_score FROM users WHERE id = ?', userId);
     if (!user) throw new ShowroomError('User not found.', 404);
     if (user.coins < catInfo.entryFee) {
       throw new ShowroomError(`Need ${catInfo.entryFee.toLocaleString()} coins to enter ${catInfo.title}.`, 400);
     }
 
-    const bird = db.prepare('SELECT * FROM birds WHERE id = ?').get(birdId) as BirdRow | undefined;
+    const bird = await tx.get<BirdRow>('SELECT * FROM birds WHERE id = ?', birdId);
     if (!bird) throw new ShowroomError('Bird not found.', 404);
     if (bird.current_owner_id !== userId) throw new ShowroomError('You do not own this conure.', 403);
 
@@ -155,7 +158,7 @@ export function enterShowroom(
       throw new ShowroomError(eligibility.reason ?? 'Bird is not eligible for this division.', 400);
     }
 
-    const birdLookup = loadAllBirdsMap(db);
+    const birdLookup = await loadAllBirdsMap(tx);
     const knownAncestors = countKnownAncestorsWithin3Gen(bird.id, birdLookup);
     let birdCoi = 0;
     if (bird.father_id && bird.mother_id) {
@@ -171,9 +174,11 @@ export function enterShowroom(
     });
 
     // Rank against existing top seasonal entries in this category
-    const existingScores = db
-      .prepare('SELECT total_score FROM showroom_entries WHERE season_key = ? AND category = ? ORDER BY total_score DESC')
-      .all(seasonKey, category) as Array<{ total_score: number }>;
+    const existingScores = await tx.all<{ total_score: number }>(
+      'SELECT total_score FROM showroom_entries WHERE season_key = ? AND category = ? ORDER BY total_score DESC',
+      seasonKey,
+      category,
+    );
 
     const betterCount = existingScores.filter((s) => s.total_score > breakdown.totalScore).length;
     const rankPosition = betterCount + 1;
@@ -191,27 +196,34 @@ export function enterShowroom(
     const netCoins = user.coins - catInfo.entryFee + prizeCoins;
     const nextXp = user.xp + xpAwarded;
     const nextLevel = getLevelInfo(nextXp).current.level;
+    const nextBestScore = Math.max(user.best_show_score ?? 0, breakdown.totalScore);
 
-    db.prepare(
+    await tx.run(
       `UPDATE users SET
          coins = ?,
          xp = ?,
          level = ?,
          total_shows = total_shows + 1,
          total_show_wins = total_show_wins + ?,
-         best_show_score = MAX(best_show_score, ?),
+         best_show_score = ?,
          total_coins_earned = total_coins_earned + ?
        WHERE id = ?`,
-    ).run(netCoins, nextXp, nextLevel, rankPosition === 1 ? 1 : 0, breakdown.totalScore, prizeCoins, userId);
+      netCoins,
+      nextXp,
+      nextLevel,
+      rankPosition === 1 ? 1 : 0,
+      nextBestScore,
+      prizeCoins,
+      userId,
+    );
 
     const entryId = `shw_${crypto.randomUUID()}`;
-    db.prepare(
+    await tx.run(
       `INSERT INTO showroom_entries (
         id, season_key, category, user_id, bird_id,
         symmetry_score, rarity_score, purity_bonus, total_score,
         rank_position, prize_coins, xp_awarded, entered_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
       entryId,
       seasonKey,
       category,
@@ -230,20 +242,18 @@ export function enterShowroom(
     let awardedBadge: { badgeKey: string; badgeTitle: string } | null = null;
     if (rankPosition <= 3) {
       const badge = getSeasonalBadgeForWin(bird.visual_phenotype, seasonYear);
-      const alreadyHas = db
-        .prepare('SELECT 1 FROM user_badges WHERE user_id = ? AND badge_key = ?')
-        .get(userId, badge.key);
+      const alreadyHas = await tx.get('SELECT 1 FROM user_badges WHERE user_id = ? AND badge_key = ?', userId, badge.key);
       if (!alreadyHas) {
-        db.prepare('INSERT INTO user_badges (user_id, badge_key, badge_title, awarded_at) VALUES (?, ?, ?, ?)').run(
+        await tx.run(
+          'INSERT INTO user_badges (user_id, badge_key, badge_title, awarded_at) VALUES (?, ?, ?, ?)',
           userId,
           badge.key,
           badge.title,
           nowMs,
         );
         awardedBadge = { badgeKey: badge.key, badgeTitle: badge.title };
-        db.prepare(
+        await tx.run(
           'INSERT INTO notifications (id, user_id, kind, title, message, read_flag, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)',
-        ).run(
           `ntf_${crypto.randomUUID()}`,
           userId,
           'SHOWROOM_TROPHY',

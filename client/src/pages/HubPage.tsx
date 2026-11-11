@@ -1,10 +1,10 @@
 import React from 'react';
-import { Award, BookOpen, Clock, Dna, Feather, Heart, ShoppingBag, Sparkles, Store } from 'lucide-react';
+import { Award, BookOpen, Clock, Coffee, Dna, Feather, Heart, ShoppingBag, Sparkles, Store } from 'lucide-react';
 import { useGame } from '../context/GameContext';
 import { formatCoins, formatDuration, getLiveBirdStatus } from '../components/format';
 
 export function HubPage() {
-  const { user, birds, activeCages, systemMarket, p2pListings, serverTime, effectiveNowMs, setActiveTab } = useGame();
+  const { user, birds, activeCages, systemMarket, p2pListings, serverTime, effectiveNowMs, setActiveTab, setSupportOpen, openChoiceBird } = useGame();
   if (!user) return null;
 
   const readyCount = birds.filter((b) => getLiveBirdStatus(b, effectiveNowMs) === 'READY').length;
@@ -79,13 +79,13 @@ export function HubPage() {
       )}
 
       {/* Aviary Banner */}
-      <section className="brass-panel rounded-2xl p-6">
+      <section className="brass-panel rounded-2xl p-4 sm:p-6">
         <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
           <div>
             <div className="text-xs font-bold uppercase tracking-widest text-[#E8B84B]">
               Breeder Ledger · {user.displayName}
             </div>
-            <h1 className="font-display mt-1 text-3xl font-extrabold text-[#F6EFE2]">{user.aviaryName}</h1>
+            <h1 className="font-display mt-1 text-2xl font-extrabold text-[#F6EFE2] sm:text-3xl">{user.aviaryName}</h1>
             <div className="mt-3 max-w-md space-y-1.5">
               <div className="flex justify-between text-xs">
                 <span className="font-bold text-[#D9CEB8]">Level {user.level} · {user.levelTitle}</span>
@@ -154,9 +154,9 @@ export function HubPage() {
               <Dna className="h-4 w-4" /> Avian Genetics Rulebook
             </div>
             <ul className="mt-2.5 space-y-1.5 text-xs text-[#C6D2C7]">
-              <li>• Males (<span className="font-mono-num text-sky-300">ZZ</span>) carry hidden sex-linked splits; Females (<span className="font-mono-num text-rose-300">ZW</span>) express Z traits immediately.</li>
-              <li>• Cinnamon &amp; Yellow-Sided cross over at <span className="font-mono-num text-[#E8B84B]">r = 0.25</span> to produce Pineapple.</li>
-              <li>• Hatching any visual mutation reveals all hidden carriers of that gene across your flock!</li>
+              <li>• Pairs lay eggs in <span className="font-mono-num text-[#E8B84B]">1–6h</span>; eggs hatch in <span className="font-mono-num text-[#E8B84B]">6h</span> with zero cooldown.</li>
+              <li>• Chicks display genetics after <span className="font-mono-num text-amber-300">3h</span> and reach adulthood 3h later.</li>
+              <li>• Foster clutches to free parents early — over 5 chicks in a nest risks 50/50 survival!</li>
             </ul>
           </div>
           <div className="mt-3 flex items-center gap-1.5 text-[11px] text-[#9EB09F]">
@@ -165,6 +165,39 @@ export function HubPage() {
           </div>
         </div>
       </div>
+
+      {/* Support Creator & Choice Bird Strip */}
+      <section className="brass-panel flex flex-col gap-3 rounded-2xl border border-amber-400/40 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-amber-400/40 bg-[#2A2212] text-[#E8B84B]">
+            <Coffee className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="font-display text-base font-bold text-[#F6EFE2]">
+              Buy the Creator a Coffee · Unlock Any Conure of Your Choice
+            </h2>
+            <p className="text-xs text-[#9EB09F]">
+              Send via NayaPay <strong className="font-mono-num text-[#E8B84B]">03324261998</strong> (Pakistan) or <strong className="text-sky-300">+92 332 4261998</strong> via Wise / Remitly / Taptap Send. Choose your exact mutation &amp; gender!
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:shrink-0">
+          <button
+            type="button"
+            onClick={() => setSupportOpen(true)}
+            className="rounded-xl border border-[#C8922A]/45 bg-[#1B251D] px-4 py-2 text-xs font-bold text-[#E8B84B] hover:border-[#E8B84B]"
+          >
+            Support Creator
+          </button>
+          <button
+            type="button"
+            onClick={openChoiceBird}
+            className="rounded-xl bg-[#E8B84B] px-4 py-2 text-xs font-extrabold text-[#141A15] shadow hover:bg-[#F2C75C]"
+          >
+            Get Bird of Your Choice →
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

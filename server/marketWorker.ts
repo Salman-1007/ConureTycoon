@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
 import type { ConureDTO, SystemMarketListingDTO } from '../shared/api-types.js';
 import { getMutationMeta } from '../shared/genetics/catalog.js';
 import {
@@ -20,36 +19,43 @@ import {
   toSanitizedConureDTO,
 } from './birdHelpers.js';
 import { HOUR_MS, getHourBucketUtc, getServerClock } from './clock.js';
-import { withTransaction } from './db.js';
+import { type AppDatabase, type DbExecutor, withTransaction } from './db.js';
 
 export const SYSTEM_EXCHANGE_USER_ID = 'npc_canopy_exchange';
 export const SYSTEM_EXCHANGE_NAME = 'Canopy Wild Exchange';
 export const MARKET_BATCH_SIZE = 10;
 
-const RARE_WEIGHTS: Array<{ key: OfficialMutationKey; weight: number }> = [
-  { key: 'TQ', weight: 22 },
-  { key: 'CIN', weight: 20 },
-  { key: 'TQ_CIN', weight: 14 },
-  { key: 'TQ_YS', weight: 14 },
-  { key: 'TQ_PINE', weight: 10 },
-  { key: 'DIL', weight: 8 },
-  { key: 'MINT', weight: 6 },
-  { key: 'SUNCHK', weight: 3 },
-  { key: 'MOONCHK', weight: 3 },
+// Rarity-scaled mutation pool for the 14% visual mutation slice (rarityScore 52 -> 100)
+const VISUAL_MUTATION_WEIGHTS: Array<{ key: OfficialMutationKey; weight: number }> = [
+  // Common Mutations (~53.6% of visual pool -> ~7.5% of total spawns)
+  { key: 'CIN', weight: 375 }, // rarityScore 52
+  { key: 'OP', weight: 375 }, // rarityScore 54
+  // Intermediate (~28.6% of visual pool -> ~4.0% of total spawns)
+  { key: 'PINE', weight: 240 }, // rarityScore 66
+  { key: 'TQ', weight: 160 }, // rarityScore 72
+  // Rare (~15.0% of visual pool -> ~2.1% of total spawns)
+  { key: 'TQ_CIN', weight: 70 }, // rarityScore 80
+  { key: 'TQ_YS', weight: 70 }, // rarityScore 80
+  { key: 'DIL', weight: 40 }, // rarityScore 84
+  { key: 'TQ_PINE', weight: 30 }, // rarityScore 88
+  // Ultra-Rare (~2.8% of visual pool -> ~0.4% of total spawns)
+  { key: 'MINT', weight: 24 }, // rarityScore 93
+  { key: 'SUNCHK', weight: 10 }, // rarityScore 97
+  { key: 'MOONCHK', weight: 6 }, // rarityScore 100
 ];
 
 export function roundTo50(value: number): number {
   return Math.round(value / 50) * 50;
 }
 
-function pickWeightedRare(rng: RandomFn): OfficialMutationKey {
-  const total = RARE_WEIGHTS.reduce((s, r) => s + r.weight, 0);
+function pickWeightedVisual(rng: RandomFn): OfficialMutationKey {
+  const total = VISUAL_MUTATION_WEIGHTS.reduce((s, r) => s + r.weight, 0);
   let r = rng() * total;
-  for (const item of RARE_WEIGHTS) {
+  for (const item of VISUAL_MUTATION_WEIGHTS) {
     r -= item.weight;
     if (r <= 0) return item.key;
   }
-  return 'TQ';
+  return 'CIN';
 }
 
 export function computeMarketPrice(basePrice: number, isSplitCarrier: boolean, rng: RandomFn = Math.random): number {
@@ -80,23 +86,20 @@ export function rollMarketConureSpec(rng: RandomFn = Math.random): {
   let splits: BaseLocusKey[] = [];
   let isSplitCarrier = false;
 
-  if (roll < 0.5) {
-    // 50% Pure Normal Green
+  if (roll < 0.54) {
+    // 54% Pure Normal Green
     mutation = 'WT';
-  } else if (roll < 0.8) {
-    // 30% Split Carrier Normal Green (1-2 masked splits)
+  } else if (roll < 0.86) {
+    // 32% Split Carrier Normal Green (1-2 masked splits)
     mutation = 'WT';
     isSplitCarrier = true;
     const pool: BaseLocusKey[] = sex === 'MALE' ? ['CIN', 'OP', 'TQ', 'DIL'] : ['TQ', 'DIL'];
     const numSplits = rng() < 0.72 ? 1 : 2;
     const shuffled = [...pool].sort(() => rng() - 0.5);
     splits = shuffled.slice(0, numSplits);
-  } else if (roll < 0.9) {
-    // 10% Intermediate Visuals (Yellow-Sided or Pineapple)
-    mutation = rng() < 0.5 ? 'OP' : 'PINE';
   } else {
-    // 10% Rare Visuals
-    mutation = pickWeightedRare(rng);
+    // 14% Visual Mutations scaled strictly by rarity tier
+    mutation = pickWeightedVisual(rng);
   }
 
   const meta = getMutationMeta(mutation);
@@ -106,59 +109,60 @@ export function rollMarketConureSpec(rng: RandomFn = Math.random): {
   return { mutation, sex, splits, isSplitCarrier, price, symmetry };
 }
 
-export function ensureSystemExchangeAccount(db: DatabaseSync): void {
-  const exists = db.prepare('SELECT 1 FROM users WHERE id = ?').get(SYSTEM_EXCHANGE_USER_ID);
-  if (!exists) {
-    db.prepare(
-      `INSERT INTO users (id, username, password_hash, display_name, aviary_name, coins, xp, level, is_npc, created_at)
-       VALUES (?, ?, 'LOCKED', ?, ?, 0, 0, 1, 1, ?)`,
-    ).run(SYSTEM_EXCHANGE_USER_ID, SYSTEM_EXCHANGE_USER_ID, SYSTEM_EXCHANGE_NAME, 'Wild Exchange', Date.now());
-  }
+export async function ensureSystemExchangeAccount(db: DbExecutor): Promise<void> {
+  await db.run(
+    `INSERT INTO users (id, username, password_hash, display_name, aviary_name, coins, xp, level, is_npc, created_at)
+     VALUES (?, ?, 'LOCKED', ?, ?, 0, 0, 1, 1, ?)
+     ON CONFLICT DO NOTHING`,
+    SYSTEM_EXCHANGE_USER_ID,
+    SYSTEM_EXCHANGE_USER_ID,
+    SYSTEM_EXCHANGE_NAME,
+    'Wild Exchange',
+    Date.now(),
+  );
 }
 
-export function ensureHourlyMarketBatch(
-  db: DatabaseSync,
+export async function ensureHourlyMarketBatch(
+  db: AppDatabase | DbExecutor,
   effectiveNowMs?: number,
   forceRefresh = false,
   rng: RandomFn = Math.random,
-): number {
-  const nowMs = effectiveNowMs ?? getServerClock(db).effectiveNowMs;
+): Promise<number> {
+  const nowMs = effectiveNowMs ?? (await getServerClock(db)).effectiveNowMs;
   const hourBucketUtc = getHourBucketUtc(nowMs);
   const nextRefreshAt = hourBucketUtc + HOUR_MS;
 
-  return withTransaction(db, () => {
-    ensureSystemExchangeAccount(db);
+  return withTransaction(db, async (tx) => {
+    await ensureSystemExchangeAccount(tx);
 
-    const existingBatch = db
-      .prepare('SELECT hour_bucket_utc FROM market_batches WHERE hour_bucket_utc = ?')
-      .get(hourBucketUtc) as { hour_bucket_utc: number } | undefined;
-
-    if (existingBatch && !forceRefresh) {
-      return hourBucketUtc;
+    if (!forceRefresh) {
+      // Atomic claim prevents concurrent boots/requests from inserting duplicate batches for the same hour.
+      const claim = await tx.run(
+        `INSERT INTO market_batches (hour_bucket_utc, generated_at, next_refresh_at) VALUES (?, ?, ?)
+         ON CONFLICT (hour_bucket_utc) DO NOTHING`,
+        hourBucketUtc,
+        nowMs,
+        nextRefreshAt,
+      );
+      if (claim.changes === 0) {
+        return hourBucketUtc;
+      }
+    } else {
+      await tx.run(
+        `INSERT INTO market_batches (hour_bucket_utc, generated_at, next_refresh_at) VALUES (?, ?, ?)
+         ON CONFLICT (hour_bucket_utc) DO UPDATE SET generated_at = EXCLUDED.generated_at, next_refresh_at = EXCLUDED.next_refresh_at`,
+        hourBucketUtc,
+        nowMs,
+        nextRefreshAt,
+      );
     }
 
     // Wipe/expire all previous unsold active listings
-    const unsoldBirdIds = db
-      .prepare("SELECT bird_id FROM market_listings WHERE status = 'ACTIVE'")
-      .all() as Array<{ bird_id: string }>;
+    const unsoldBirdIds = await tx.all<{ bird_id: string }>("SELECT bird_id FROM market_listings WHERE status = 'ACTIVE'");
 
-    db.prepare("UPDATE market_listings SET status = 'EXPIRED' WHERE status = 'ACTIVE'").run();
+    await tx.run("UPDATE market_listings SET status = 'EXPIRED' WHERE status = 'ACTIVE'");
     for (const row of unsoldBirdIds) {
-      db.prepare("UPDATE birds SET status = 'SANCTUARY' WHERE id = ? AND current_owner_id IS NULL").run(row.bird_id);
-    }
-
-    if (!existingBatch) {
-      db.prepare('INSERT INTO market_batches (hour_bucket_utc, generated_at, next_refresh_at) VALUES (?, ?, ?)').run(
-        hourBucketUtc,
-        nowMs,
-        nextRefreshAt,
-      );
-    } else {
-      db.prepare('UPDATE market_batches SET generated_at = ?, next_refresh_at = ? WHERE hour_bucket_utc = ?').run(
-        nowMs,
-        nextRefreshAt,
-        hourBucketUtc,
-      );
+      await tx.run("UPDATE birds SET status = 'SANCTUARY' WHERE id = ? AND current_owner_id IS NULL", row.bird_id);
     }
 
     for (let i = 0; i < MARKET_BATCH_SIZE; i++) {
@@ -167,7 +171,7 @@ export function ensureHourlyMarketBatch(
       const actualSplits = deriveActualSplits(genotype);
       const visualPhenotype = deriveVisualPhenotype(genotype);
 
-      const bird = insertBirdRecord(db, {
+      const bird = await insertBirdRecord(tx, {
         name: randomConureName(),
         genotype,
         visualPhenotype,
@@ -185,10 +189,9 @@ export function ensureHourlyMarketBatch(
         status: 'MARKET_SYSTEM',
       });
 
-      db.prepare(
+      await tx.run(
         `INSERT INTO market_listings (id, hour_bucket_utc, bird_id, price, is_split_carrier, status, created_at)
          VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)`,
-      ).run(
         `mkt_${crypto.randomUUID()}`,
         hourBucketUtc,
         bird.id,
@@ -202,27 +205,31 @@ export function ensureHourlyMarketBatch(
   });
 }
 
-export function getActiveSystemMarket(db: DatabaseSync, viewerId: string): {
+export async function getActiveSystemMarket(
+  db: AppDatabase | DbExecutor,
+  viewerId: string,
+): Promise<{
   hourBucketUtc: number;
   listings: SystemMarketListingDTO[];
-} {
-  const clock = getServerClock(db);
-  const hourBucketUtc = ensureHourlyMarketBatch(db, clock.effectiveNowMs);
+}> {
+  const clock = await getServerClock(db);
+  const hourBucketUtc = await ensureHourlyMarketBatch(db, clock.effectiveNowMs);
 
-  const rows = db
-    .prepare(
-      `SELECT ml.id as listing_id, ml.hour_bucket_utc, ml.price, ml.status as listing_status, b.*
-       FROM market_listings ml
-       JOIN birds b ON b.id = ml.bird_id
-       WHERE ml.hour_bucket_utc = ? AND ml.status IN ('ACTIVE', 'SOLD')
-       ORDER BY ml.created_at ASC, ml.id ASC`,
-    )
-    .all(hourBucketUtc) as unknown as Array<BirdRow & { listing_id: string; hour_bucket_utc: number; price: number; listing_status: 'ACTIVE' | 'SOLD' }>;
+  const rows = await db.all<
+    BirdRow & { listing_id: string; hour_bucket_utc: number; price: number; listing_status: 'ACTIVE' | 'SOLD' }
+  >(
+    `SELECT ml.id as listing_id, ml.hour_bucket_utc, ml.price, ml.status as listing_status, b.*
+     FROM market_listings ml
+     JOIN birds b ON b.id = ml.bird_id
+     WHERE ml.hour_bucket_utc = ? AND ml.status IN ('ACTIVE', 'SOLD')
+     ORDER BY ml.created_at ASC, ml.id ASC`,
+    hourBucketUtc,
+  );
 
-  const birdLookup = loadAllBirdsMap(db);
-  const ownerNames = loadOwnerNamesMap(db);
-  const discovered = getUserDiscoveredGenes(db, viewerId);
-  const mutationConfigs = loadMutationConfigsMap(db);
+  const birdLookup = await loadAllBirdsMap(db);
+  const ownerNames = await loadOwnerNamesMap(db);
+  const discovered = await getUserDiscoveredGenes(db, viewerId);
+  const mutationConfigs = await loadMutationConfigsMap(db);
 
   const listings: SystemMarketListingDTO[] = rows.map((row) => ({
     listingId: row.listing_id,
@@ -253,18 +260,19 @@ export class MarketPurchaseError extends Error {
   }
 }
 
-export function buySystemMarketListing(
-  db: DatabaseSync,
+export async function buySystemMarketListing(
+  db: AppDatabase | DbExecutor,
   buyerId: string,
   listingId: string,
-): { bird: ConureDTO; newCoinsBalance: number; pricePaid: number } {
-  const clock = getServerClock(db);
+): Promise<{ bird: ConureDTO; newCoinsBalance: number; pricePaid: number }> {
+  const clock = await getServerClock(db);
   const nowMs = clock.effectiveNowMs;
 
-  return withTransaction(db, () => {
-    const listing = db
-      .prepare('SELECT id, bird_id, price, status FROM market_listings WHERE id = ?')
-      .get(listingId) as { id: string; bird_id: string; price: number; status: string } | undefined;
+  return withTransaction(db, async (tx) => {
+    const listing = await tx.get<{ id: string; bird_id: string; price: number; status: string }>(
+      'SELECT id, bird_id, price, status FROM market_listings WHERE id = ?',
+      listingId,
+    );
 
     if (!listing) {
       throw new MarketPurchaseError('Listing not found.', 404);
@@ -273,9 +281,21 @@ export function buySystemMarketListing(
       throw new MarketPurchaseError('This conure has already been sold or expired.', 409);
     }
 
-    const buyer = db
-      .prepare('SELECT id, coins, market_spent FROM users WHERE id = ?')
-      .get(buyerId) as { id: string; coins: number; market_spent: number } | undefined;
+    // Atomic claim prevents concurrent double-buys under PostgreSQL READ COMMITTED
+    const claimed = await tx.run(
+      "UPDATE market_listings SET status = 'SOLD', buyer_id = ?, sold_at = ? WHERE id = ? AND status = 'ACTIVE'",
+      buyerId,
+      nowMs,
+      listingId,
+    );
+    if (claimed.changes === 0) {
+      throw new MarketPurchaseError('This conure has already been sold or expired.', 409);
+    }
+
+    const buyer = await tx.get<{ id: string; coins: number; market_spent: number }>(
+      'SELECT id, coins, market_spent FROM users WHERE id = ?',
+      buyerId,
+    );
 
     if (!buyer) {
       throw new MarketPurchaseError('Buyer account not found.', 404);
@@ -285,28 +305,23 @@ export function buySystemMarketListing(
     }
 
     const newCoins = buyer.coins - listing.price;
-    db.prepare('UPDATE users SET coins = ?, market_spent = market_spent + ? WHERE id = ?').run(
-      newCoins,
-      listing.price,
-      buyerId,
-    );
+    await tx.run('UPDATE users SET coins = ?, market_spent = market_spent + ? WHERE id = ?', newCoins, listing.price, buyerId);
 
-    const birdRow = db.prepare('SELECT * FROM birds WHERE id = ?').get(listing.bird_id) as unknown as BirdRow;
-    const discovered = getUserDiscoveredGenes(db, buyerId);
+    const birdRow = (await tx.get<BirdRow>('SELECT * FROM birds WHERE id = ?', listing.bird_id))!;
+    const discovered = await getUserDiscoveredGenes(tx, buyerId);
     const actualSplits: string[] = JSON.parse(birdRow.actual_splits || '[]');
     const revealedSplits = actualSplits.filter((g) => discovered.has(g));
 
-    db.prepare(
-      `UPDATE birds SET current_owner_id = ?, status = 'READY', displayed_splits = ? WHERE id = ?`,
-    ).run(buyerId, JSON.stringify(revealedSplits), listing.bird_id);
+    await tx.run(
+      "UPDATE birds SET current_owner_id = ?, status = 'READY', displayed_splits = ? WHERE id = ?",
+      buyerId,
+      JSON.stringify(revealedSplits),
+      listing.bird_id,
+    );
 
-    db.prepare(
-      `UPDATE market_listings SET status = 'SOLD', buyer_id = ?, sold_at = ? WHERE id = ?`,
-    ).run(buyerId, nowMs, listingId);
-
-    const updatedRow = db.prepare('SELECT * FROM birds WHERE id = ?').get(listing.bird_id) as unknown as BirdRow;
-    const birdLookup = loadAllBirdsMap(db);
-    const ownerNames = loadOwnerNamesMap(db);
+    const updatedRow = (await tx.get<BirdRow>('SELECT * FROM birds WHERE id = ?', listing.bird_id))!;
+    const birdLookup = await loadAllBirdsMap(tx);
+    const ownerNames = await loadOwnerNamesMap(tx);
 
     return {
       bird: toSanitizedConureDTO(updatedRow, birdLookup, ownerNames, discovered, buyerId, nowMs, false),
@@ -316,14 +331,14 @@ export function buySystemMarketListing(
   });
 }
 
-export function startMarketCronWorker(db: DatabaseSync): NodeJS.Timeout {
-  // Initial sync on boot
-  ensureHourlyMarketBatch(db);
+export function startMarketCronWorker(db: AppDatabase): NodeJS.Timeout {
+  // Initial sync triggered asynchronously
+  void ensureHourlyMarketBatch(db).catch((err) => {
+    console.error('[marketWorker] Initial market sync failed:', err);
+  });
   return setInterval(() => {
-    try {
-      ensureHourlyMarketBatch(db);
-    } catch (err) {
+    void ensureHourlyMarketBatch(db).catch((err) => {
       console.error('[marketWorker] Failed hourly check:', err);
-    }
+    });
   }, 5000);
 }

@@ -1,5 +1,5 @@
-import type { DatabaseSync } from 'node:sqlite';
 import type { ServerTimeDTO } from '../shared/api-types.js';
+import type { DbExecutor } from './db.js';
 
 export const HOUR_MS = 60 * 60 * 1000;
 const DEV_OFFSET_KEY = 'dev_time_offset_ms';
@@ -10,40 +10,40 @@ export function isDevTimeToolsEnabled(): boolean {
   return process.env.NODE_ENV !== 'production';
 }
 
-export function getDevTimeOffsetMs(db: DatabaseSync): number {
+export async function getDevTimeOffsetMs(db: DbExecutor): Promise<number> {
   if (!isDevTimeToolsEnabled()) return 0;
-  const row = db
-    .prepare('SELECT meta_value FROM system_meta WHERE meta_key = ?')
-    .get(DEV_OFFSET_KEY) as { meta_value: string } | undefined;
+  const row = await db.get<{ meta_value: string }>('SELECT meta_value FROM system_meta WHERE meta_key = ?', DEV_OFFSET_KEY);
   const parsed = row ? Number(row.meta_value) : 0;
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function advanceDevTimeOffsetMs(db: DatabaseSync, deltaMs: number): number {
+export async function advanceDevTimeOffsetMs(db: DbExecutor, deltaMs: number): Promise<number> {
   if (!isDevTimeToolsEnabled()) {
     throw new Error('Developer time controls are disabled in production mode.');
   }
-  const current = getDevTimeOffsetMs(db);
+  const current = await getDevTimeOffsetMs(db);
   const next = Math.max(0, current + Math.round(deltaMs));
-  db.prepare(
+  await db.run(
     `INSERT INTO system_meta (meta_key, meta_value) VALUES (?, ?)
      ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value`,
-  ).run(DEV_OFFSET_KEY, String(next));
+    DEV_OFFSET_KEY,
+    String(next),
+  );
   return next;
 }
 
-export function resetDevTimeOffsetMs(db: DatabaseSync): void {
+export async function resetDevTimeOffsetMs(db: DbExecutor): Promise<void> {
   if (!isDevTimeToolsEnabled()) return;
-  db.prepare('DELETE FROM system_meta WHERE meta_key = ?').run(DEV_OFFSET_KEY);
+  await db.run('DELETE FROM system_meta WHERE meta_key = ?', DEV_OFFSET_KEY);
 }
 
 export function getHourBucketUtc(ms: number): number {
   return Math.floor(ms / HOUR_MS) * HOUR_MS;
 }
 
-export function getServerClock(db: DatabaseSync): ServerTimeDTO {
+export async function getServerClock(db: DbExecutor): Promise<ServerTimeDTO> {
   const serverUtcMs = Date.now();
-  const timeOffsetMs = getDevTimeOffsetMs(db);
+  const timeOffsetMs = await getDevTimeOffsetMs(db);
   const effectiveNowMs = serverUtcMs + timeOffsetMs;
   const currentHourBucketUtc = getHourBucketUtc(effectiveNowMs);
   const nextRefreshUtcMs = currentHourBucketUtc + HOUR_MS;

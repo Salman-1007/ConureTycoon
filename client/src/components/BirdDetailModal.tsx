@@ -109,20 +109,20 @@ export function BirdDetailModal({ bird, onClose, onStartPair, onGoToShowroom }: 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4" onClick={onClose}>
       <div
-        className="brass-panel max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl p-5 md:p-6"
+        className="brass-panel max-h-[92dvh] w-full max-w-3xl overflow-y-auto rounded-t-2xl p-4 sm:rounded-2xl md:p-6"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-start justify-between gap-4 border-b border-[#C8922A]/25 pb-4">
-          <div className="flex items-center gap-4">
-            <div className="studio-frame h-24 w-28 shrink-0 overflow-hidden rounded-xl">
+        <div className="flex items-start justify-between gap-3 border-b border-[#C8922A]/25 pb-4">
+          <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+            <div className="studio-frame h-20 w-24 shrink-0 overflow-hidden rounded-xl sm:h-24 sm:w-28">
               <img src={bird.assetUrl} alt={bird.phenotypeName} className="h-full w-full object-contain p-1.5" />
             </div>
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="font-display text-2xl font-bold text-[#F6EFE2]">{bird.name}</h2>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+                <h2 className="font-display text-lg font-bold text-[#F6EFE2] sm:text-2xl">{bird.name}</h2>
                 <span className="font-mono-num rounded bg-[#141C16] px-2 py-0.5 text-xs font-bold text-[#E8B84B] border border-[#C8922A]/35">
                   {bird.legBand}
                 </span>
@@ -188,13 +188,27 @@ export function BirdDetailModal({ bird, onClose, onStartPair, onGoToShowroom }: 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div className="rounded-xl border border-[#C8922A]/25 bg-[#151E18] p-3.5 space-y-2">
                 <div className="text-xs font-bold uppercase tracking-wider text-[#E8B84B]">Biological Phenotype</div>
-                <p className="text-xs leading-relaxed text-[#D9CEB8]">{meta.visualDescription}</p>
-                <div className="pt-1 text-xs text-[#9EB09F]">
-                  Locus: <span className="font-mono-num text-[#F6EFE2]">{meta.chromosomeLabel}</span>
-                </div>
-                <div className="text-xs text-[#9EB09F]">
-                  Mode: <span className="text-[#F6EFE2]">{meta.inheritanceMode}</span>
-                </div>
+                {!bird.geneticsRevealed && effectiveNowMs < bird.geneticsRevealTimestamp ? (
+                  <>
+                    <p className="text-xs leading-relaxed text-amber-200">
+                      This newly hatched chick is still in yellow nestling down. Its feather colors, visual mutation, and genetics will display in{' '}
+                      <span className="font-mono-num font-bold">
+                        {formatDuration(bird.geneticsRevealTimestamp - effectiveNowMs)}
+                      </span>{' '}
+                      (+3h post-hatch), then mature to adulthood 3h later.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xs leading-relaxed text-[#D9CEB8]">{meta.visualDescription}</p>
+                    <div className="pt-1 text-xs text-[#9EB09F]">
+                      Locus: <span className="font-mono-num text-[#F6EFE2]">{meta.chromosomeLabel}</span>
+                    </div>
+                    <div className="text-xs text-[#9EB09F]">
+                      Mode: <span className="text-[#F6EFE2]">{meta.inheritanceMode}</span>
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="rounded-xl border border-[#C8922A]/25 bg-[#151E18] p-3.5 space-y-2">
@@ -211,9 +225,14 @@ export function BirdDetailModal({ bird, onClose, onStartPair, onGoToShowroom }: 
                   <span className="text-[#9EB09F]">Sanctuary Appraisal</span>
                   <span className="font-mono-num font-bold text-[#E8B84B]">{formatCoins(bird.sanctuaryValue)}</span>
                 </div>
+                {liveStatus === 'JUVENILE' && !bird.geneticsRevealed && effectiveNowMs < bird.geneticsRevealTimestamp && (
+                  <div className="text-xs text-amber-300">
+                    Genetics display in: <span className="font-mono-num font-bold">{formatDuration(bird.geneticsRevealTimestamp - effectiveNowMs)}</span>
+                  </div>
+                )}
                 {liveStatus === 'JUVENILE' && (
                   <div className="text-xs text-sky-300">
-                    Maturation remaining: <span className="font-mono-num font-bold">{formatDuration(bird.maturationTimestamp - effectiveNowMs)}</span>
+                    Adult maturation remaining: <span className="font-mono-num font-bold">{formatDuration(bird.maturationTimestamp - effectiveNowMs)}</span>
                   </div>
                 )}
                 {liveStatus === 'COOLDOWN' && (
@@ -268,7 +287,7 @@ export function BirdDetailModal({ bird, onClose, onStartPair, onGoToShowroom }: 
             </form>
 
             {/* Primary Actions */}
-            <div className="flex flex-wrap gap-2.5 pt-2">
+            <div className="grid grid-cols-1 gap-2 pt-2 sm:flex sm:flex-wrap sm:gap-2.5">
               <button
                 type="button"
                 disabled={liveStatus !== 'READY'}
@@ -276,7 +295,7 @@ export function BirdDetailModal({ bird, onClose, onStartPair, onGoToShowroom }: 
                   onStartPair(bird);
                   onClose();
                 }}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-[#E8B84B] px-4 py-2.5 text-xs font-extrabold text-[#141A15] hover:bg-[#F2C75C] disabled:opacity-40"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#E8B84B] px-4 py-2.5 text-xs font-extrabold text-[#141A15] hover:bg-[#F2C75C] disabled:opacity-40"
               >
                 <Heart className="h-4 w-4" /> Select for Breeding Pair
               </button>
@@ -287,7 +306,7 @@ export function BirdDetailModal({ bird, onClose, onStartPair, onGoToShowroom }: 
                   onGoToShowroom(bird);
                   onClose();
                 }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[#C8922A]/60 bg-[#233227] px-4 py-2.5 text-xs font-bold text-[#F6EFE2] hover:bg-[#2E4133] disabled:opacity-40"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#C8922A]/60 bg-[#233227] px-4 py-2.5 text-xs font-bold text-[#F6EFE2] hover:bg-[#2E4133] disabled:opacity-40"
               >
                 <Award className="h-4 w-4 text-[#E8B84B]" /> Enter Exhibition Showroom
               </button>
@@ -295,7 +314,7 @@ export function BirdDetailModal({ bird, onClose, onStartPair, onGoToShowroom }: 
                 type="button"
                 disabled={busy || liveStatus === 'BREEDING' || liveStatus === 'INCUBATING' || liveStatus === 'MARKET_P2P'}
                 onClick={handleSellSanctuary}
-                className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-rose-500/50 bg-rose-950/40 px-4 py-2.5 text-xs font-bold text-rose-200 hover:bg-rose-900/50 disabled:opacity-40"
+                className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-rose-500/50 bg-rose-950/40 px-4 py-2.5 text-xs font-bold text-rose-200 hover:bg-rose-900/50 disabled:opacity-40 sm:ml-auto"
               >
                 <Tag className="h-4 w-4" /> Release ({formatCoins(bird.sanctuaryValue)})
               </button>

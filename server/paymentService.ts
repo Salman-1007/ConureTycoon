@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
 import type {
   PaymentRequestDTO,
   PaymentRequestType,
@@ -9,6 +8,7 @@ import type {
 import { MUTATION_CATALOG, getMutationMeta, normalizeGeneKey } from '../shared/genetics/catalog.js';
 import type { Sex } from '../shared/genetics/types.js';
 import { loadMutationConfigsMap, parseJsonArray, resolveMutationAssetUrl } from './birdHelpers.js';
+import type { DbExecutor } from './db.js';
 
 export const SUPPORT_CONFIG_META_KEY = 'support_config_v1';
 
@@ -34,10 +34,11 @@ export class PaymentServiceError extends Error {
   }
 }
 
-export function getSupportConfig(db: DatabaseSync): SupportConfigDTO {
-  const row = db.prepare('SELECT meta_value FROM system_meta WHERE meta_key = ?').get(SUPPORT_CONFIG_META_KEY) as
-    | { meta_value: string }
-    | undefined;
+export async function getSupportConfig(db: DbExecutor): Promise<SupportConfigDTO> {
+  const row = await db.get<{ meta_value: string }>(
+    'SELECT meta_value FROM system_meta WHERE meta_key = ?',
+    SUPPORT_CONFIG_META_KEY,
+  );
   if (!row) return { ...DEFAULT_SUPPORT_CONFIG };
   try {
     const parsed = JSON.parse(row.meta_value) as Partial<SupportConfigDTO>;
@@ -57,8 +58,11 @@ export function getSupportConfig(db: DatabaseSync): SupportConfigDTO {
   }
 }
 
-export function updateSupportConfig(db: DatabaseSync, patch: Partial<SupportConfigDTO>): SupportConfigDTO {
-  const current = getSupportConfig(db);
+export async function updateSupportConfig(
+  db: DbExecutor,
+  patch: Partial<SupportConfigDTO>,
+): Promise<SupportConfigDTO> {
+  const current = await getSupportConfig(db);
   const next: SupportConfigDTO = {
     nayapayNumber: (patch.nayapayNumber ?? current.nayapayNumber).trim().slice(0, 40) || '03324261998',
     accountTitle: (patch.accountTitle ?? current.accountTitle).trim().slice(0, 80) || 'Salman Adil',
@@ -72,10 +76,12 @@ export function updateSupportConfig(db: DatabaseSync, patch: Partial<SupportConf
     customForeignNote: (patch.customForeignNote ?? current.customForeignNote).trim().slice(0, 400),
   };
 
-  db.prepare(
+  await db.run(
     `INSERT INTO system_meta (meta_key, meta_value) VALUES (?, ?)
      ON CONFLICT(meta_key) DO UPDATE SET meta_value = excluded.meta_value`,
-  ).run(SUPPORT_CONFIG_META_KEY, JSON.stringify(next));
+    SUPPORT_CONFIG_META_KEY,
+    JSON.stringify(next),
+  );
 
   return next;
 }
@@ -95,8 +101,8 @@ export interface SpecialBirdRow {
   created_at: number;
 }
 
-export function mapSpecialBirdRow(db: DatabaseSync, row: SpecialBirdRow): SpecialBirdDTO {
-  const overrides = loadMutationConfigsMap(db);
+export async function mapSpecialBirdRow(db: DbExecutor, row: SpecialBirdRow): Promise<SpecialBirdDTO> {
+  const overrides = await loadMutationConfigsMap(db);
   const override = overrides.get(row.mutation_key);
   const meta = getMutationMeta(row.mutation_key);
   return {
@@ -116,19 +122,17 @@ export function mapSpecialBirdRow(db: DatabaseSync, row: SpecialBirdRow): Specia
   };
 }
 
-export function getLiveSpecialBird(db: DatabaseSync): SpecialBirdDTO | null {
-  const row = db
-    .prepare(
-      `SELECT * FROM special_birds
-       WHERE is_live = 1 AND (stock > 0 OR stock = -1)
-       ORDER BY created_at DESC LIMIT 1`,
-    )
-    .get() as SpecialBirdRow | undefined;
+export async function getLiveSpecialBird(db: DbExecutor): Promise<SpecialBirdDTO | null> {
+  const row = await db.get<SpecialBirdRow>(
+    `SELECT * FROM special_birds
+     WHERE is_live = 1 AND (stock > 0 OR stock = -1)
+     ORDER BY created_at DESC LIMIT 1`,
+  );
   return row ? mapSpecialBirdRow(db, row) : null;
 }
 
-export function submitChoiceBirdPaymentRequest(
-  db: DatabaseSync,
+export async function submitChoiceBirdPaymentRequest(
+  db: DbExecutor,
   userId: string,
   payload: {
     mutationKey: string;
@@ -141,7 +145,7 @@ export function submitChoiceBirdPaymentRequest(
     senderPhone?: string;
     referenceNote?: string;
   },
-): PaymentRequestDTO {
+): Promise<PaymentRequestDTO> {
   const senderName = String(payload.senderName ?? '').trim().slice(0, 80);
   if (!senderName) {
     throw new PaymentServiceError('Please enter the sender name used for the payment.');
@@ -149,7 +153,7 @@ export function submitChoiceBirdPaymentRequest(
 
   const rawMutation = String(payload.mutationKey ?? '').trim();
   const normKey = normalizeGeneKey(rawMutation);
-  const overrides = loadMutationConfigsMap(db);
+  const overrides = await loadMutationConfigsMap(db);
   if (!overrides.has(rawMutation) && !(normKey in MUTATION_CATALOG)) {
     throw new PaymentServiceError('Please select a valid conure mutation from the list.');
   }
@@ -187,8 +191,8 @@ export function submitChoiceBirdPaymentRequest(
   });
 }
 
-export function submitSpecialBirdPaymentRequest(
-  db: DatabaseSync,
+export async function submitSpecialBirdPaymentRequest(
+  db: DbExecutor,
   userId: string,
   specialBirdId: string,
   payload: {
@@ -199,10 +203,11 @@ export function submitSpecialBirdPaymentRequest(
     currency?: string;
     amount?: number;
   },
-): PaymentRequestDTO {
-  const sb = db
-    .prepare('SELECT * FROM special_birds WHERE id = ? AND is_live = 1 AND (stock > 0 OR stock = -1)')
-    .get(specialBirdId) as SpecialBirdRow | undefined;
+): Promise<PaymentRequestDTO> {
+  const sb = await db.get<SpecialBirdRow>(
+    'SELECT * FROM special_birds WHERE id = ? AND is_live = 1 AND (stock > 0 OR stock = -1)',
+    specialBirdId,
+  );
   if (!sb) {
     throw new PaymentServiceError('This special conure is currently unavailable.', 404);
   }
@@ -212,9 +217,6 @@ export function submitSpecialBirdPaymentRequest(
   const referenceNote = String(payload.referenceNote ?? '').trim().slice(0, 240);
   if (!senderName) {
     throw new PaymentServiceError('Sender name is required.');
-  }
-  if (!senderPhone && !referenceNote) {
-    throw new PaymentServiceError('Please enter your phone/account ID or transaction reference.');
   }
 
   return insertPaymentRequest(db, {
@@ -233,8 +235,8 @@ export function submitSpecialBirdPaymentRequest(
   });
 }
 
-export function submitSupportRequest(
-  db: DatabaseSync,
+export async function submitSupportRequest(
+  db: DbExecutor,
   userId: string,
   payload: {
     senderName: string;
@@ -243,7 +245,7 @@ export function submitSupportRequest(
     paymentMethod?: string;
     referenceNote?: string;
   },
-): PaymentRequestDTO {
+): Promise<PaymentRequestDTO> {
   const senderName = String(payload.senderName ?? '').trim().slice(0, 80);
   if (!senderName) {
     throw new PaymentServiceError('Please provide your sender name.');
@@ -269,8 +271,8 @@ export function submitSupportRequest(
   });
 }
 
-function insertPaymentRequest(
-  db: DatabaseSync,
+async function insertPaymentRequest(
+  db: DbExecutor,
   params: {
     userId: string;
     requestType: PaymentRequestType;
@@ -285,16 +287,15 @@ function insertPaymentRequest(
     senderPhone: string;
     referenceNote: string;
   },
-): PaymentRequestDTO {
+): Promise<PaymentRequestDTO> {
   const id = `pay_${crypto.randomUUID()}`;
   const now = Date.now();
-  db.prepare(
+  await db.run(
     `INSERT INTO payment_requests (
       id, user_id, request_type, special_bird_id, requested_mutation, requested_gender,
       desired_bird_name, amount, currency, payment_method, sender_name, sender_phone,
       reference_note, status, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-  ).run(
     id,
     params.userId,
     params.requestType,
@@ -311,7 +312,7 @@ function insertPaymentRequest(
     now,
   );
 
-  const created = listPaymentRequests(db, params.userId, id);
+  const created = await listPaymentRequests(db, params.userId, id);
   return created[0]!;
 }
 
@@ -337,11 +338,11 @@ interface JoinedPaymentRow {
   reviewed_at: number | null;
 }
 
-export function listPaymentRequests(
-  db: DatabaseSync,
+export async function listPaymentRequests(
+  db: DbExecutor,
   filterUserId?: string,
   singleId?: string,
-): PaymentRequestDTO[] {
+): Promise<PaymentRequestDTO[]> {
   const whereParts: string[] = [];
   const args: Array<string> = [];
   if (filterUserId) {
@@ -354,19 +355,18 @@ export function listPaymentRequests(
   }
   const whereSql = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
 
-  const rows = db
-    .prepare(
-      `SELECT pr.*, u.username, u.aviary_name, sb.name AS special_bird_name
-       FROM payment_requests pr
-       JOIN users u ON u.id = pr.user_id
-       LEFT JOIN special_birds sb ON sb.id = pr.special_bird_id
-       ${whereSql}
-       ORDER BY pr.created_at DESC
-       LIMIT 200`,
-    )
-    .all(...args) as unknown as JoinedPaymentRow[];
+  const rows = await db.all<JoinedPaymentRow>(
+    `SELECT pr.*, u.username, u.aviary_name, sb.name AS special_bird_name
+     FROM payment_requests pr
+     JOIN users u ON u.id = pr.user_id
+     LEFT JOIN special_birds sb ON sb.id = pr.special_bird_id
+     ${whereSql}
+     ORDER BY pr.created_at DESC
+     LIMIT 200`,
+    ...args,
+  );
 
-  const overrides = loadMutationConfigsMap(db);
+  const overrides = await loadMutationConfigsMap(db);
   return rows.map((r) => {
     const mutKey = r.requested_mutation;
     const override = mutKey ? overrides.get(mutKey) : undefined;

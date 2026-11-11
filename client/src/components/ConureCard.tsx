@@ -89,10 +89,17 @@ export function ConureCard({
 
         {/* Live Juvenile / Cooldown Timer */}
         {liveStatus === 'JUVENILE' && (
-          <div className="rounded-lg bg-sky-950/60 border border-sky-400/30 px-2.5 py-1 text-[11px] text-sky-200 flex justify-between">
-            <span>Maturing</span>
-            <span className="font-mono-num font-bold">{formatDuration(bird.maturationTimestamp - nowMs)}</span>
-          </div>
+          !bird.geneticsRevealed && nowMs < bird.geneticsRevealTimestamp ? (
+            <div className="rounded-lg bg-amber-950/60 border border-amber-400/35 px-2.5 py-1 text-[11px] text-amber-200 flex justify-between">
+              <span>Genetics Reveal</span>
+              <span className="font-mono-num font-bold">{formatDuration(bird.geneticsRevealTimestamp - nowMs)}</span>
+            </div>
+          ) : (
+            <div className="rounded-lg bg-sky-950/60 border border-sky-400/30 px-2.5 py-1 text-[11px] text-sky-200 flex justify-between">
+              <span>Adult Ready In</span>
+              <span className="font-mono-num font-bold">{formatDuration(bird.maturationTimestamp - nowMs)}</span>
+            </div>
+          )
         )}
         {liveStatus === 'COOLDOWN' && (
           <div className="rounded-lg bg-orange-950/50 border border-orange-400/30 px-2.5 py-1 text-[11px] text-orange-200 flex justify-between">
@@ -102,7 +109,12 @@ export function ConureCard({
         )}
 
         {/* Fog-of-War Visible Splits */}
-        {bird.visibleSplits.length > 0 ? (
+        {!bird.geneticsRevealed && nowMs < bird.geneticsRevealTimestamp ? (
+          <div className="flex items-center gap-1 text-[11px] text-amber-200/80">
+            <Sparkles className="h-3 w-3 opacity-80" />
+            <span>Downy chick · feathers reveal genetics at +3h</span>
+          </div>
+        ) : bird.visibleSplits.length > 0 ? (
           <div className="flex flex-wrap gap-1 pt-0.5">
             {bird.visibleSplits.map((split) => (
               <span

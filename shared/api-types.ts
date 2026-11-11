@@ -31,6 +31,8 @@ export interface ConureDTO {
   currentOwnerId: string | null;
   currentOwnerName: string | null;
   hatchTimestamp: number;
+  geneticsRevealTimestamp: number;
+  geneticsRevealed: boolean;
   maturationTimestamp: number;
   cooldownUntil: number;
   generationDepth: number;
@@ -46,7 +48,10 @@ export interface BreedingCageDTO {
   inbreedingCoi: number;
   coiWarning: boolean;
   clutchSize: number;
+  fosteredCount: number;
   startedAt: number;
+  laidAt: number;
+  eggsLaid: boolean;
   hatchReadyAt: number;
   hatched: boolean;
 }
@@ -169,6 +174,17 @@ export interface HatchResponseDTO {
   newlyDiscoveredGenes: string[];
   retroactivelyRevealedBirdIds: string[];
   notifications: NotificationDTO[];
+  fosterOverloadTotal?: number;
+  fosterLostCount?: number;
+}
+
+export interface FosterClutchResponseDTO {
+  sourceCageId: string;
+  targetCage: BreedingCageDTO;
+  transferredCount: number;
+  totalInTarget: number;
+  extraRiskCount: number;
+  freedParents: [string, string];
 }
 
 export interface MutationConfigDTO {

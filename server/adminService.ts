@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
 import type {
   AdminActivityItemDTO,
   AdminBirdDTO,
@@ -27,7 +26,7 @@ import {
   resolveMutationAssetUrl,
 } from './birdHelpers.js';
 import { getServerClock } from './clock.js';
-import { withTransaction } from './db.js';
+import { type AppDatabase, type DbExecutor, withTransaction } from './db.js';
 import { SYSTEM_EXCHANGE_USER_ID, ensureHourlyMarketBatch, ensureSystemExchangeAccount } from './marketWorker.js';
 import { type SpecialBirdRow, listPaymentRequests, mapSpecialBirdRow } from './paymentService.js';
 
@@ -40,17 +39,17 @@ export class AdminServiceError extends Error {
   }
 }
 
-export function ensureMutationConfigsSynced(db: DatabaseSync): void {
+export async function ensureMutationConfigsSynced(db: DbExecutor): Promise<void> {
   const now = Date.now();
-  const stmt = db.prepare(
-    `INSERT OR IGNORE INTO mutation_configs (
-      mutation_key, name, chromosome_label, inheritance_mode, visual_description,
-      image_url, base_price, rarity, rarity_score, accent_hex, base_phenotype, is_custom, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-  );
+  const sql = `INSERT INTO mutation_configs (
+    mutation_key, name, chromosome_label, inheritance_mode, visual_description,
+    image_url, base_price, rarity, rarity_score, accent_hex, base_phenotype, is_custom, updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+  ON CONFLICT (mutation_key) DO NOTHING`;
 
   for (const meta of Object.values(MUTATION_CATALOG)) {
-    stmt.run(
+    await db.run(
+      sql,
       meta.key,
       meta.name,
       meta.chromosomeLabel,
@@ -67,9 +66,9 @@ export function ensureMutationConfigsSynced(db: DatabaseSync): void {
   }
 }
 
-export function getMutationConfigs(db: DatabaseSync): MutationConfigDTO[] {
-  ensureMutationConfigsSynced(db);
-  const rows = db.prepare('SELECT * FROM mutation_configs').all() as unknown as MutationConfigRow[];
+export async function getMutationConfigs(db: DbExecutor): Promise<MutationConfigDTO[]> {
+  await ensureMutationConfigsSynced(db);
+  const rows = await db.all<MutationConfigRow>('SELECT * FROM mutation_configs');
   const catalogOrder = Object.keys(MUTATION_CATALOG);
 
   rows.sort((a, b) => {
@@ -97,8 +96,8 @@ export function getMutationConfigs(db: DatabaseSync): MutationConfigDTO[] {
   }));
 }
 
-export function upsertMutationConfig(
-  db: DatabaseSync,
+export async function upsertMutationConfig(
+  db: DbExecutor,
   payload: {
     key?: string;
     name: string;
@@ -112,8 +111,8 @@ export function upsertMutationConfig(
     accentHex?: string;
     basePhenotype?: string;
   },
-): MutationConfigDTO {
-  ensureMutationConfigsSynced(db);
+): Promise<MutationConfigDTO> {
+  await ensureMutationConfigsSynced(db);
   const name = String(payload.name ?? '').trim().slice(0, 64);
   if (!name) {
     throw new AdminServiceError('Mutation name is required.');
@@ -123,9 +122,7 @@ export function upsertMutationConfig(
     throw new AdminServiceError('Valid mutation key is required.');
   }
 
-  const existing = db
-    .prepare('SELECT * FROM mutation_configs WHERE mutation_key = ?')
-    .get(rawKey) as MutationConfigRow | undefined;
+  const existing = await db.get<MutationConfigRow>('SELECT * FROM mutation_configs WHERE mutation_key = ?', rawKey);
   const isCatalog = rawKey in MUTATION_CATALOG;
   const defaultMeta = isCatalog ? MUTATION_CATALOG[rawKey as MutationKey] : MUTATION_CATALOG.WT;
 
@@ -143,7 +140,7 @@ export function upsertMutationConfig(
   );
   const now = Date.now();
 
-  db.prepare(
+  await db.run(
     `INSERT INTO mutation_configs (
       mutation_key, name, chromosome_label, inheritance_mode, visual_description,
       image_url, base_price, rarity, rarity_score, accent_hex, base_phenotype, is_custom, updated_at
@@ -160,7 +157,6 @@ export function upsertMutationConfig(
       accent_hex = excluded.accent_hex,
       base_phenotype = excluded.base_phenotype,
       updated_at = excluded.updated_at`,
-  ).run(
     rawKey,
     name,
     String(payload.chromosomeLabel ?? existing?.chromosome_label ?? 'Custom Morph').trim().slice(0, 80),
@@ -176,49 +172,49 @@ export function upsertMutationConfig(
     now,
   );
 
-  return getMutationConfigs(db).find((m) => m.key === rawKey)!;
+  const list = await getMutationConfigs(db);
+  return list.find((m) => m.key === rawKey)!;
 }
 
-export function updateMutationImage(db: DatabaseSync, key: string, imageUrl: string): void {
-  ensureMutationConfigsSynced(db);
+export async function updateMutationImage(db: DbExecutor, key: string, imageUrl: string): Promise<void> {
+  await ensureMutationConfigsSynced(db);
   const cleanUrl = String(imageUrl ?? '').trim();
   if (!cleanUrl) {
     throw new AdminServiceError('imageUrl is required.');
   }
-  const existing = db.prepare('SELECT 1 FROM mutation_configs WHERE mutation_key = ?').get(key);
+  const existing = await db.get('SELECT 1 FROM mutation_configs WHERE mutation_key = ?', key);
   if (!existing) {
     throw new AdminServiceError('Mutation not found.', 404);
   }
-  db.prepare('UPDATE mutation_configs SET image_url = ?, updated_at = ? WHERE mutation_key = ?').run(
-    cleanUrl,
-    Date.now(),
-    key,
-  );
+  await db.run('UPDATE mutation_configs SET image_url = ?, updated_at = ? WHERE mutation_key = ?', cleanUrl, Date.now(), key);
 }
 
-export function getAdminOverview(db: DatabaseSync): AdminOverviewDTO {
-  const count = (sql: string) => (db.prepare(sql).get() as { c: number }).c;
+export async function getAdminOverview(db: DbExecutor): Promise<AdminOverviewDTO> {
+  const count = async (sql: string) => ((await db.get<{ c: number }>(sql))?.c ?? 0);
+  const [users, birds, showroomEntries, pendingPayments, activeMarketListings, activeCages, p2pListings] =
+    await Promise.all([
+      count('SELECT COUNT(*) as c FROM users WHERE is_npc = 0'),
+      count('SELECT COUNT(*) as c FROM birds'),
+      count('SELECT COUNT(*) as c FROM showroom_entries'),
+      count("SELECT COUNT(*) as c FROM payment_requests WHERE status = 'pending'"),
+      count("SELECT COUNT(*) as c FROM market_listings WHERE status = 'ACTIVE'"),
+      count('SELECT COUNT(*) as c FROM breeding_cages WHERE hatched = 0'),
+      count("SELECT COUNT(*) as c FROM p2p_listings WHERE status = 'ACTIVE'"),
+    ]);
+
   return {
-    users: count('SELECT COUNT(*) as c FROM users WHERE is_npc = 0'),
-    birds: count('SELECT COUNT(*) as c FROM birds'),
-    showroomEntries: count('SELECT COUNT(*) as c FROM showroom_entries'),
-    pendingPayments: count("SELECT COUNT(*) as c FROM payment_requests WHERE status = 'pending'"),
-    activeMarketListings: count("SELECT COUNT(*) as c FROM market_listings WHERE status = 'ACTIVE'"),
-    activeCages: count('SELECT COUNT(*) as c FROM breeding_cages WHERE hatched = 0'),
-    p2pListings: count("SELECT COUNT(*) as c FROM p2p_listings WHERE status = 'ACTIVE'"),
+    users,
+    birds,
+    showroomEntries,
+    pendingPayments,
+    activeMarketListings,
+    activeCages,
+    p2pListings,
   };
 }
 
-export function getAdminUsers(db: DatabaseSync): AdminUserDTO[] {
-  const rows = db
-    .prepare(
-      `SELECT u.*,
-        (SELECT COUNT(*) FROM birds b WHERE b.current_owner_id = u.id AND b.status <> 'SANCTUARY') as bird_count
-       FROM users u
-       WHERE u.is_npc = 0
-       ORDER BY u.created_at DESC`,
-    )
-    .all() as unknown as Array<{
+export async function getAdminUsers(db: DbExecutor): Promise<AdminUserDTO[]> {
+  const rows = await db.all<{
     id: string;
     username: string;
     display_name: string;
@@ -231,7 +227,13 @@ export function getAdminUsers(db: DatabaseSync): AdminUserDTO[] {
     bird_count: number;
     is_admin: number;
     created_at: number;
-  }>;
+  }>(
+    `SELECT u.*,
+      (SELECT COUNT(*) FROM birds b WHERE b.current_owner_id = u.id AND b.status <> 'SANCTUARY') as bird_count
+     FROM users u
+     WHERE u.is_npc = 0
+     ORDER BY u.created_at DESC`,
+  );
 
   return rows.map((u) => ({
     id: u.id,
@@ -249,105 +251,105 @@ export function getAdminUsers(db: DatabaseSync): AdminUserDTO[] {
   }));
 }
 
-export function adjustUserCoins(db: DatabaseSync, userId: string, amount: number): { coins: number } {
+export async function adjustUserCoins(
+  db: AppDatabase | DbExecutor,
+  userId: string,
+  amount: number,
+): Promise<{ coins: number }> {
   const delta = Math.round(Number(amount));
   if (!Number.isFinite(delta) || delta === 0) {
     throw new AdminServiceError('Provide a non-zero coin adjustment amount.');
   }
 
-  return withTransaction(db, () => {
-    const user = db.prepare('SELECT id, coins FROM users WHERE id = ? AND is_npc = 0').get(userId) as
-      | { id: string; coins: number }
-      | undefined;
+  return withTransaction(db, async (tx) => {
+    const user = await tx.get<{ id: string; coins: number }>('SELECT id, coins FROM users WHERE id = ? AND is_npc = 0', userId);
     if (!user) throw new AdminServiceError('User not found.', 404);
     const nextCoins = Math.max(0, user.coins + delta);
-    db.prepare('UPDATE users SET coins = ? WHERE id = ?').run(nextCoins, userId);
+    await tx.run('UPDATE users SET coins = ? WHERE id = ?', nextCoins, userId);
     return { coins: nextCoins };
   });
 }
 
-export function deleteAdminUser(db: DatabaseSync, targetUserId: string, actingAdminId: string): void {
+export async function deleteAdminUser(
+  db: AppDatabase | DbExecutor,
+  targetUserId: string,
+  actingAdminId: string,
+): Promise<void> {
   if (targetUserId === actingAdminId) {
     throw new AdminServiceError('Cannot delete the currently signed-in admin account.');
   }
 
-  withTransaction(db, () => {
-    const target = db.prepare('SELECT id, is_npc, username FROM users WHERE id = ?').get(targetUserId) as
-      | { id: string; is_npc: number; username: string }
-      | undefined;
+  await withTransaction(db, async (tx) => {
+    const target = await tx.get<{ id: string; is_npc: number; username: string }>(
+      'SELECT id, is_npc, username FROM users WHERE id = ?',
+      targetUserId,
+    );
     if (!target) throw new AdminServiceError('User not found.', 404);
     if (target.is_npc || target.username.toLowerCase() === 'salman') {
       throw new AdminServiceError('Protected account cannot be deleted.');
     }
 
-    ensureSystemExchangeAccount(db);
+    await ensureSystemExchangeAccount(tx);
 
     // Clean up dependent user records before deleting user
-    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(targetUserId);
-    db.prepare('DELETE FROM notifications WHERE user_id = ?').run(targetUserId);
-    db.prepare('DELETE FROM user_badges WHERE user_id = ?').run(targetUserId);
-    db.prepare('DELETE FROM user_discovered_genes WHERE user_id = ?').run(targetUserId);
-    db.prepare('DELETE FROM payment_requests WHERE user_id = ?').run(targetUserId);
-    db.prepare('DELETE FROM chat_messages WHERE user_id = ? OR recipient_id = ?').run(targetUserId, targetUserId);
-    db.prepare('DELETE FROM breeding_cages WHERE owner_id = ?').run(targetUserId);
-    db.prepare('DELETE FROM showroom_entries WHERE user_id = ?').run(targetUserId);
-    db.prepare('DELETE FROM p2p_listings WHERE seller_id = ?').run(targetUserId);
-    db.prepare('UPDATE p2p_listings SET buyer_id = NULL WHERE buyer_id = ?').run(targetUserId);
-    db.prepare('UPDATE market_listings SET buyer_id = NULL WHERE buyer_id = ?').run(targetUserId);
+    await tx.run('DELETE FROM sessions WHERE user_id = ?', targetUserId);
+    await tx.run('DELETE FROM notifications WHERE user_id = ?', targetUserId);
+    await tx.run('DELETE FROM user_badges WHERE user_id = ?', targetUserId);
+    await tx.run('DELETE FROM user_discovered_genes WHERE user_id = ?', targetUserId);
+    await tx.run('DELETE FROM payment_requests WHERE user_id = ?', targetUserId);
+    await tx.run('DELETE FROM chat_messages WHERE user_id = ? OR recipient_id = ?', targetUserId, targetUserId);
+    await tx.run('DELETE FROM breeding_cages WHERE owner_id = ?', targetUserId);
+    await tx.run('DELETE FROM showroom_entries WHERE user_id = ?', targetUserId);
+    await tx.run('DELETE FROM p2p_listings WHERE seller_id = ?', targetUserId);
+    await tx.run('UPDATE p2p_listings SET buyer_id = NULL WHERE buyer_id = ?', targetUserId);
+    await tx.run('UPDATE market_listings SET buyer_id = NULL WHERE buyer_id = ?', targetUserId);
 
     // Handle birds owned or bred by deleted user without violating pedigree foreign keys
-    const ownedOrBredBirds = db
-      .prepare('SELECT id FROM birds WHERE current_owner_id = ? OR original_breeder_id = ?')
-      .all(targetUserId, targetUserId) as Array<{ id: string }>;
+    const ownedOrBredBirds = await tx.all<{ id: string }>(
+      'SELECT id FROM birds WHERE current_owner_id = ? OR original_breeder_id = ?',
+      targetUserId,
+      targetUserId,
+    );
 
     for (const b of ownedOrBredBirds) {
-      const hasProgeny = db
-        .prepare('SELECT 1 FROM birds WHERE father_id = ? OR mother_id = ? LIMIT 1')
-        .get(b.id, b.id);
-      const inOtherShowroom = db
-        .prepare('SELECT 1 FROM showroom_entries WHERE bird_id = ? LIMIT 1')
-        .get(b.id);
-      const inMarket = db
-        .prepare('SELECT 1 FROM market_listings WHERE bird_id = ? LIMIT 1')
-        .get(b.id);
-      const inOtherP2P = db
-        .prepare('SELECT 1 FROM p2p_listings WHERE bird_id = ? LIMIT 1')
-        .get(b.id);
-      const inOtherCages = db
-        .prepare('SELECT 1 FROM breeding_cages WHERE male_id = ? OR female_id = ? LIMIT 1')
-        .get(b.id, b.id);
+      const hasProgeny = await tx.get('SELECT 1 FROM birds WHERE father_id = ? OR mother_id = ? LIMIT 1', b.id, b.id);
+      const inOtherShowroom = await tx.get('SELECT 1 FROM showroom_entries WHERE bird_id = ? LIMIT 1', b.id);
+      const inMarket = await tx.get('SELECT 1 FROM market_listings WHERE bird_id = ? LIMIT 1', b.id);
+      const inOtherP2P = await tx.get('SELECT 1 FROM p2p_listings WHERE bird_id = ? LIMIT 1', b.id);
+      const inOtherCages = await tx.get('SELECT 1 FROM breeding_cages WHERE male_id = ? OR female_id = ? LIMIT 1', b.id, b.id);
 
       if (hasProgeny || inOtherShowroom || inMarket || inOtherP2P || inOtherCages) {
-        db.prepare(
+        await tx.run(
           `UPDATE birds
            SET current_owner_id = CASE WHEN current_owner_id = ? THEN NULL ELSE current_owner_id END,
                original_breeder_id = CASE WHEN original_breeder_id = ? THEN ? ELSE original_breeder_id END,
                status = CASE WHEN current_owner_id = ? THEN 'SANCTUARY' ELSE status END
            WHERE id = ?`,
-        ).run(targetUserId, targetUserId, SYSTEM_EXCHANGE_USER_ID, targetUserId, b.id);
+          targetUserId,
+          targetUserId,
+          SYSTEM_EXCHANGE_USER_ID,
+          targetUserId,
+          b.id,
+        );
       } else {
-        db.prepare('DELETE FROM birds WHERE id = ?').run(b.id);
+        await tx.run('DELETE FROM birds WHERE id = ?', b.id);
       }
     }
 
-    db.prepare('DELETE FROM users WHERE id = ?').run(targetUserId);
+    await tx.run('DELETE FROM users WHERE id = ?', targetUserId);
   });
 }
 
-export function getAdminBirds(db: DatabaseSync): AdminBirdDTO[] {
-  const rows = db
-    .prepare(
-      `SELECT b.*, u.username AS owner_username, u.aviary_name AS owner_aviary_name
-       FROM birds b
-       LEFT JOIN users u ON u.id = b.current_owner_id
-       ORDER BY b.hatch_timestamp DESC
-       LIMIT 500`,
-    )
-    .all() as unknown as Array<
-    BirdRow & { owner_username: string | null; owner_aviary_name: string | null }
-  >;
+export async function getAdminBirds(db: DbExecutor): Promise<AdminBirdDTO[]> {
+  const rows = await db.all<BirdRow & { owner_username: string | null; owner_aviary_name: string | null }>(
+    `SELECT b.*, u.username AS owner_username, u.aviary_name AS owner_aviary_name
+     FROM birds b
+     LEFT JOIN users u ON u.id = b.current_owner_id
+     ORDER BY b.hatch_timestamp DESC
+     LIMIT 500`,
+  );
 
-  const overrides = loadMutationConfigsMap(db);
+  const overrides = await loadMutationConfigsMap(db);
   return rows.map((r) => {
     const override = overrides.get(r.visual_phenotype);
     const meta = getMutationMeta(r.visual_phenotype);
@@ -369,12 +371,13 @@ export function getAdminBirds(db: DatabaseSync): AdminBirdDTO[] {
   });
 }
 
-function resolveBiologicalKey(db: DatabaseSync, mutationKey: string): MutationKey {
+async function resolveBiologicalKey(db: DbExecutor, mutationKey: string): Promise<MutationKey> {
   const norm = normalizeGeneKey(mutationKey.trim());
   if (norm in MUTATION_CATALOG) return norm;
-  const row = db
-    .prepare('SELECT base_phenotype FROM mutation_configs WHERE mutation_key = ?')
-    .get(mutationKey.trim()) as { base_phenotype: string } | undefined;
+  const row = await db.get<{ base_phenotype: string }>(
+    'SELECT base_phenotype FROM mutation_configs WHERE mutation_key = ?',
+    mutationKey.trim(),
+  );
   if (row && row.base_phenotype in MUTATION_CATALOG) {
     return row.base_phenotype as MutationKey;
   }
@@ -392,8 +395,8 @@ function sanitizeSplitsForSex(splits: string[], sex: Sex): BaseLocusKey[] {
   return valid;
 }
 
-export function injectMarketBird(
-  db: DatabaseSync,
+export async function injectMarketBird(
+  db: AppDatabase | DbExecutor,
   payload: {
     name?: string;
     mutationKey: string;
@@ -402,30 +405,30 @@ export function injectMarketBird(
     price: number;
     splits?: string[];
   },
-): { listingId: string; legBand: string } {
-  ensureMutationConfigsSynced(db);
-  const clock = getServerClock(db);
+): Promise<{ listingId: string; legBand: string }> {
+  await ensureMutationConfigsSynced(db);
+  const clock = await getServerClock(db);
   const nowMs = clock.effectiveNowMs;
-  const hourBucketUtc = ensureHourlyMarketBatch(db, nowMs);
+  const hourBucketUtc = await ensureHourlyMarketBatch(db, nowMs);
 
   const sex = String(payload.gender ?? 'MALE').toUpperCase();
   if (sex !== 'MALE' && sex !== 'FEMALE') {
     throw new AdminServiceError('Gender must be MALE or FEMALE.');
   }
 
-  const bioKey = resolveBiologicalKey(db, payload.mutationKey);
+  const bioKey = await resolveBiologicalKey(db, payload.mutationKey);
   const cleanSplits = sanitizeSplitsForSex(payload.splits ?? [], sex);
   const price = Math.max(100, Math.round(Number(payload.price) || getMutationMeta(bioKey).basePrice));
   const symmetry = Math.max(65, Math.min(100, Number(payload.symmetry ?? 85) || 85));
   const name = String(payload.name ?? '').trim().slice(0, 32) || randomConureName();
 
-  return withTransaction(db, () => {
-    ensureSystemExchangeAccount(db);
+  return withTransaction(db, async (tx) => {
+    await ensureSystemExchangeAccount(tx);
     const genotype = createGenotypeForMutation(bioKey, sex, cleanSplits);
     const actualSplits = deriveActualSplits(genotype);
     const visualPhenotype = deriveVisualPhenotype(genotype);
 
-    const bird = insertBirdRecord(db, {
+    const bird = await insertBirdRecord(tx, {
       name,
       genotype,
       visualPhenotype,
@@ -435,7 +438,7 @@ export function injectMarketBird(
       fatherId: null,
       motherId: null,
       originalBreederId: SYSTEM_EXCHANGE_USER_ID,
-      originalBreederName: "Admin Wild Release",
+      originalBreederName: 'Admin Wild Release',
       currentOwnerId: null,
       hatchTimestamp: nowMs - 30 * 24 * 60 * 60 * 1000,
       maturationTimestamp: nowMs - 15 * 24 * 60 * 60 * 1000,
@@ -444,22 +447,32 @@ export function injectMarketBird(
     });
 
     const listingId = `mkt_${crypto.randomUUID()}`;
-    db.prepare(
+    await tx.run(
       `INSERT INTO market_listings (id, hour_bucket_utc, bird_id, price, is_split_carrier, status, created_at)
        VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?)`,
-    ).run(listingId, hourBucketUtc, bird.id, price, actualSplits.length > 0 ? 1 : 0, nowMs);
+      listingId,
+      hourBucketUtc,
+      bird.id,
+      price,
+      actualSplits.length > 0 ? 1 : 0,
+      nowMs,
+    );
 
     return { listingId, legBand: bird.leg_band };
   });
 }
 
-export function getAdminSpecialBirds(db: DatabaseSync): SpecialBirdDTO[] {
-  const rows = db.prepare('SELECT * FROM special_birds ORDER BY created_at DESC').all() as unknown as SpecialBirdRow[];
-  return rows.map((r) => mapSpecialBirdRow(db, r));
+export async function getAdminSpecialBirds(db: DbExecutor): Promise<SpecialBirdDTO[]> {
+  const rows = await db.all<SpecialBirdRow>('SELECT * FROM special_birds ORDER BY created_at DESC');
+  const results: SpecialBirdDTO[] = [];
+  for (const r of rows) {
+    results.push(await mapSpecialBirdRow(db, r));
+  }
+  return results;
 }
 
-export function createSpecialBird(
-  db: DatabaseSync,
+export async function createSpecialBird(
+  db: DbExecutor,
   payload: {
     name: string;
     mutationKey: string;
@@ -471,15 +484,15 @@ export function createSpecialBird(
     description?: string;
     stock?: number;
   },
-): SpecialBirdDTO {
-  ensureMutationConfigsSynced(db);
+): Promise<SpecialBirdDTO> {
+  await ensureMutationConfigsSynced(db);
   const name = String(payload.name ?? '').trim().slice(0, 48);
   if (!name) throw new AdminServiceError('Special bird name is required.');
 
   const sex = String(payload.gender ?? 'MALE').toUpperCase();
   if (sex !== 'MALE' && sex !== 'FEMALE') throw new AdminServiceError('Gender must be MALE or FEMALE.');
 
-  const bioKey = resolveBiologicalKey(db, payload.mutationKey);
+  const bioKey = await resolveBiologicalKey(db, payload.mutationKey);
   const cleanSplits = sanitizeSplitsForSex(payload.splits ?? [], sex);
   const symmetry = Math.max(65, Math.min(100, Number(payload.symmetry ?? 92) || 92));
   const pricePkr = Math.max(0, Math.round(Number(payload.pricePkr) || 1000));
@@ -487,12 +500,11 @@ export function createSpecialBird(
   const id = `spb_${crypto.randomUUID()}`;
   const now = Date.now();
 
-  db.prepare(
+  await db.run(
     `INSERT INTO special_birds (
       id, name, mutation_key, sex, plumage_symmetry, splits_json,
       price_pkr, image_url, description, is_live, stock, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-  ).run(
     id,
     name,
     bioKey,
@@ -506,64 +518,69 @@ export function createSpecialBird(
     now,
   );
 
-  const created = db.prepare('SELECT * FROM special_birds WHERE id = ?').get(id) as unknown as SpecialBirdRow;
+  const created = (await db.get<SpecialBirdRow>('SELECT * FROM special_birds WHERE id = ?', id))!;
   return mapSpecialBirdRow(db, created);
 }
 
-export function setSpecialBirdLive(db: DatabaseSync, id: string, isLive: boolean): void {
-  withTransaction(db, () => {
-    const existing = db.prepare('SELECT id FROM special_birds WHERE id = ?').get(id);
+export async function setSpecialBirdLive(db: AppDatabase | DbExecutor, id: string, isLive: boolean): Promise<void> {
+  await withTransaction(db, async (tx) => {
+    const existing = await tx.get('SELECT id FROM special_birds WHERE id = ?', id);
     if (!existing) throw new AdminServiceError('Special bird not found.', 404);
     if (isLive) {
-      db.prepare('UPDATE special_birds SET is_live = 0').run();
+      await tx.run('UPDATE special_birds SET is_live = 0');
     }
-    db.prepare('UPDATE special_birds SET is_live = ? WHERE id = ?').run(isLive ? 1 : 0, id);
+    await tx.run('UPDATE special_birds SET is_live = ? WHERE id = ?', isLive ? 1 : 0, id);
   });
 }
 
-export function approvePaymentRequest(
-  db: DatabaseSync,
+export async function approvePaymentRequest(
+  db: AppDatabase | DbExecutor,
   requestId: string,
-): { deliveredBirdLegBand: string | null; deliveredBirdName: string | null } {
-  const clock = getServerClock(db);
+): Promise<{ deliveredBirdLegBand: string | null; deliveredBirdName: string | null }> {
+  const clock = await getServerClock(db);
   const nowMs = clock.effectiveNowMs;
   const wallNow = Date.now();
 
-  return withTransaction(db, () => {
-    ensureSystemExchangeAccount(db);
-    const pr = db.prepare('SELECT * FROM payment_requests WHERE id = ?').get(requestId) as
-      | {
-          id: string;
-          user_id: string;
-          request_type: 'CHOICE_BIRD' | 'SPECIAL_BIRD' | 'SUPPORT';
-          special_bird_id: string | null;
-          requested_mutation: string | null;
-          requested_gender: Sex | null;
-          desired_bird_name: string;
-          amount: number;
-          currency: string;
-          sender_name: string;
-          status: string;
-        }
-      | undefined;
+  return withTransaction(db, async (tx) => {
+    await ensureSystemExchangeAccount(tx);
+    const pr = await tx.get<{
+      id: string;
+      user_id: string;
+      request_type: 'CHOICE_BIRD' | 'SPECIAL_BIRD' | 'SUPPORT';
+      special_bird_id: string | null;
+      requested_mutation: string | null;
+      requested_gender: Sex | null;
+      desired_bird_name: string;
+      amount: number;
+      currency: string;
+      sender_name: string;
+      status: string;
+    }>('SELECT * FROM payment_requests WHERE id = ?', requestId);
 
     if (!pr) throw new AdminServiceError('Payment request not found.', 404);
     if (pr.status !== 'pending') throw new AdminServiceError('Payment request is no longer pending.', 409);
+
+    const claimed = await tx.run(
+      "UPDATE payment_requests SET status = 'approved', reviewed_at = ? WHERE id = ? AND status = 'pending'",
+      wallNow,
+      requestId,
+    );
+    if (claimed.changes === 0) {
+      throw new AdminServiceError('Payment request is no longer pending.', 409);
+    }
 
     let deliveredBirdLegBand: string | null = null;
     let deliveredBirdName: string | null = null;
 
     if (pr.request_type === 'SPECIAL_BIRD') {
       if (!pr.special_bird_id) throw new AdminServiceError('Special bird reference missing.');
-      const sb = db.prepare('SELECT * FROM special_birds WHERE id = ?').get(pr.special_bird_id) as
-        | SpecialBirdRow
-        | undefined;
+      const sb = await tx.get<SpecialBirdRow>('SELECT * FROM special_birds WHERE id = ?', pr.special_bird_id);
       if (!sb) throw new AdminServiceError('Special bird record not found.', 404);
 
-      const bioKey = resolveBiologicalKey(db, sb.mutation_key);
+      const bioKey = await resolveBiologicalKey(tx, sb.mutation_key);
       const splits = sanitizeSplitsForSex(parseJsonArray<string>(sb.splits_json), sb.sex);
       const genotype = createGenotypeForMutation(bioKey, sb.sex, splits);
-      const bird = insertBirdRecord(db, {
+      const bird = await insertBirdRecord(tx, {
         name: sb.name,
         genotype,
         visualPhenotype: deriveVisualPhenotype(genotype),
@@ -586,17 +603,13 @@ export function approvePaymentRequest(
 
       if (sb.stock > 0) {
         const nextStock = sb.stock - 1;
-        db.prepare('UPDATE special_birds SET stock = ?, is_live = CASE WHEN ? <= 0 THEN 0 ELSE is_live END WHERE id = ?').run(
-          nextStock,
-          nextStock,
-          sb.id,
-        );
+        const nextIsLive = nextStock <= 0 ? 0 : sb.is_live;
+        await tx.run('UPDATE special_birds SET stock = ?, is_live = ? WHERE id = ?', nextStock, nextIsLive, sb.id);
       }
 
-      db.prepare(
+      await tx.run(
         `INSERT INTO notifications (id, user_id, kind, title, message, read_flag, created_at)
          VALUES (?, ?, 'SYSTEM', ?, ?, 0, ?)`,
-      ).run(
         `ntf_${crypto.randomUUID()}`,
         pr.user_id,
         'Special Conure Delivered!',
@@ -607,13 +620,13 @@ export function approvePaymentRequest(
       if (!pr.requested_mutation || !pr.requested_gender) {
         throw new AdminServiceError('Requested mutation or gender missing.');
       }
-      const bioKey = resolveBiologicalKey(db, pr.requested_mutation);
+      const bioKey = await resolveBiologicalKey(tx, pr.requested_mutation);
       const meta = getMutationMeta(bioKey);
       const sex = pr.requested_gender;
       const genotype = createGenotypeForMutation(bioKey, sex, []);
       const birdName = pr.desired_bird_name.trim() || `${randomConureName()}`;
 
-      const bird = insertBirdRecord(db, {
+      const bird = await insertBirdRecord(tx, {
         name: birdName,
         genotype,
         visualPhenotype: deriveVisualPhenotype(genotype),
@@ -634,10 +647,9 @@ export function approvePaymentRequest(
       deliveredBirdLegBand = bird.leg_band;
       deliveredBirdName = bird.name;
 
-      db.prepare(
+      await tx.run(
         `INSERT INTO notifications (id, user_id, kind, title, message, read_flag, created_at)
          VALUES (?, ?, 'SYSTEM', ?, ?, 0, ?)`,
-      ).run(
         `ntf_${crypto.randomUUID()}`,
         pr.user_id,
         'Coffee Gift Conure Delivered!',
@@ -645,10 +657,9 @@ export function approvePaymentRequest(
         wallNow,
       );
     } else {
-      db.prepare(
+      await tx.run(
         `INSERT INTO notifications (id, user_id, kind, title, message, read_flag, created_at)
          VALUES (?, ?, 'SYSTEM', ?, ?, 0, ?)`,
-      ).run(
         `ntf_${crypto.randomUUID()}`,
         pr.user_id,
         'Thank You for Supporting the Creator!',
@@ -657,33 +668,32 @@ export function approvePaymentRequest(
       );
     }
 
-    db.prepare("UPDATE payment_requests SET status = 'approved', reviewed_at = ? WHERE id = ?").run(
-      wallNow,
-      requestId,
-    );
-
     return { deliveredBirdLegBand, deliveredBirdName };
   });
 }
 
-export function rejectPaymentRequest(db: DatabaseSync, requestId: string): void {
+export async function rejectPaymentRequest(db: AppDatabase | DbExecutor, requestId: string): Promise<void> {
   const wallNow = Date.now();
-  withTransaction(db, () => {
-    const pr = db.prepare('SELECT id, user_id, status FROM payment_requests WHERE id = ?').get(requestId) as
-      | { id: string; user_id: string; status: string }
-      | undefined;
+  await withTransaction(db, async (tx) => {
+    const pr = await tx.get<{ id: string; user_id: string; status: string }>(
+      'SELECT id, user_id, status FROM payment_requests WHERE id = ?',
+      requestId,
+    );
     if (!pr) throw new AdminServiceError('Payment request not found.', 404);
     if (pr.status !== 'pending') throw new AdminServiceError('Payment request is no longer pending.', 409);
 
-    db.prepare("UPDATE payment_requests SET status = 'rejected', reviewed_at = ? WHERE id = ?").run(
+    const claimed = await tx.run(
+      "UPDATE payment_requests SET status = 'rejected', reviewed_at = ? WHERE id = ? AND status = 'pending'",
       wallNow,
       requestId,
     );
+    if (claimed.changes === 0) {
+      throw new AdminServiceError('Payment request is no longer pending.', 409);
+    }
 
-    db.prepare(
+    await tx.run(
       `INSERT INTO notifications (id, user_id, kind, title, message, read_flag, created_at)
        VALUES (?, ?, 'SYSTEM', ?, ?, 0, ?)`,
-    ).run(
       `ntf_${crypto.randomUUID()}`,
       pr.user_id,
       'Payment Claim Update',
@@ -693,32 +703,8 @@ export function rejectPaymentRequest(db: DatabaseSync, requestId: string): void 
   });
 }
 
-export function getAdminChatThreads(db: DatabaseSync): AdminChatThreadDTO[] {
-  const rows = db
-    .prepare(
-      `SELECT
-        CASE WHEN m.user_id < m.recipient_id THEN m.user_id ELSE m.recipient_id END AS u1_id,
-        CASE WHEN m.user_id < m.recipient_id THEN m.recipient_id ELSE m.user_id END AS u2_id,
-        u1.username AS u1_username,
-        u1.aviary_name AS u1_aviary,
-        u2.username AS u2_username,
-        u2.aviary_name AS u2_aviary,
-        COUNT(*) AS message_count,
-        MAX(m.created_at) AS last_activity,
-        (
-          SELECT cm.message FROM chat_messages cm
-          WHERE (cm.user_id = u1.id AND cm.recipient_id = u2.id)
-             OR (cm.user_id = u2.id AND cm.recipient_id = u1.id)
-          ORDER BY cm.created_at DESC LIMIT 1
-        ) AS snippet
-       FROM chat_messages m
-       JOIN users u1 ON u1.id = (CASE WHEN m.user_id < m.recipient_id THEN m.user_id ELSE m.recipient_id END)
-       JOIN users u2 ON u2.id = (CASE WHEN m.user_id < m.recipient_id THEN m.recipient_id ELSE m.user_id END)
-       WHERE m.recipient_id IS NOT NULL
-       GROUP BY u1_id, u2_id, u1.username, u1.aviary_name, u2.username, u2.aviary_name, u1.id, u2.id
-       ORDER BY last_activity DESC`,
-    )
-    .all() as unknown as Array<{
+export async function getAdminChatThreads(db: DbExecutor): Promise<AdminChatThreadDTO[]> {
+  const rows = await db.all<{
     u1_id: string;
     u2_id: string;
     u1_username: string;
@@ -728,7 +714,29 @@ export function getAdminChatThreads(db: DatabaseSync): AdminChatThreadDTO[] {
     message_count: number;
     last_activity: number;
     snippet: string;
-  }>;
+  }>(
+    `SELECT
+      CASE WHEN m.user_id < m.recipient_id THEN m.user_id ELSE m.recipient_id END AS u1_id,
+      CASE WHEN m.user_id < m.recipient_id THEN m.recipient_id ELSE m.user_id END AS u2_id,
+      u1.username AS u1_username,
+      u1.aviary_name AS u1_aviary,
+      u2.username AS u2_username,
+      u2.aviary_name AS u2_aviary,
+      COUNT(*) AS message_count,
+      MAX(m.created_at) AS last_activity,
+      (
+        SELECT cm.message FROM chat_messages cm
+        WHERE (cm.user_id = u1.id AND cm.recipient_id = u2.id)
+           OR (cm.user_id = u2.id AND cm.recipient_id = u1.id)
+        ORDER BY cm.created_at DESC LIMIT 1
+      ) AS snippet
+     FROM chat_messages m
+     JOIN users u1 ON u1.id = (CASE WHEN m.user_id < m.recipient_id THEN m.user_id ELSE m.recipient_id END)
+     JOIN users u2 ON u2.id = (CASE WHEN m.user_id < m.recipient_id THEN m.recipient_id ELSE m.user_id END)
+     WHERE m.recipient_id IS NOT NULL
+     GROUP BY u1_id, u2_id, u1.username, u1.aviary_name, u2.username, u2.aviary_name, u1.id, u2.id
+     ORDER BY last_activity DESC`,
+  );
 
   return rows.map((r) => ({
     u1Id: r.u1_id,
@@ -743,15 +751,12 @@ export function getAdminChatThreads(db: DatabaseSync): AdminChatThreadDTO[] {
   }));
 }
 
-export function getAdminChatThreadMessages(db: DatabaseSync, u1: string, u2: string): AdminChatMessageDTO[] {
-  const rows = db
-    .prepare(
-      `SELECT id, user_id, recipient_id, username, aviary_name, message, created_at
-       FROM chat_messages
-       WHERE (user_id = ? AND recipient_id = ?) OR (user_id = ? AND recipient_id = ?)
-       ORDER BY created_at ASC`,
-    )
-    .all(u1, u2, u2, u1) as unknown as Array<{
+export async function getAdminChatThreadMessages(
+  db: DbExecutor,
+  u1: string,
+  u2: string,
+): Promise<AdminChatMessageDTO[]> {
+  const rows = await db.all<{
     id: string;
     user_id: string;
     recipient_id: string | null;
@@ -759,7 +764,16 @@ export function getAdminChatThreadMessages(db: DatabaseSync, u1: string, u2: str
     aviary_name: string;
     message: string;
     created_at: number;
-  }>;
+  }>(
+    `SELECT id, user_id, recipient_id, username, aviary_name, message, created_at
+     FROM chat_messages
+     WHERE (user_id = ? AND recipient_id = ?) OR (user_id = ? AND recipient_id = ?)
+     ORDER BY created_at ASC`,
+    u1,
+    u2,
+    u2,
+    u1,
+  );
 
   return rows.map((m) => ({
     id: m.id,
@@ -772,21 +786,10 @@ export function getAdminChatThreadMessages(db: DatabaseSync, u1: string, u2: str
   }));
 }
 
-export function getAdminAuditFeed(db: DatabaseSync): AdminActivityItemDTO[] {
+export async function getAdminAuditFeed(db: DbExecutor): Promise<AdminActivityItemDTO[]> {
   const items: AdminActivityItemDTO[] = [];
 
-  const p2pRows = db
-    .prepare(
-      `SELECT p.id, p.asking_price, p.sold_at, b.name AS bird_name, b.leg_band,
-              s.username AS seller_name, u.username AS buyer_name
-       FROM p2p_listings p
-       JOIN birds b ON b.id = p.bird_id
-       JOIN users s ON s.id = p.seller_id
-       LEFT JOIN users u ON u.id = p.buyer_id
-       WHERE p.status = 'SOLD' AND p.sold_at IS NOT NULL
-       ORDER BY p.sold_at DESC LIMIT 20`,
-    )
-    .all() as Array<{
+  const p2pRows = await db.all<{
     id: string;
     asking_price: number;
     sold_at: number;
@@ -794,7 +797,16 @@ export function getAdminAuditFeed(db: DatabaseSync): AdminActivityItemDTO[] {
     leg_band: string;
     seller_name: string;
     buyer_name: string | null;
-  }>;
+  }>(
+    `SELECT p.id, p.asking_price, p.sold_at, b.name AS bird_name, b.leg_band,
+            s.username AS seller_name, u.username AS buyer_name
+     FROM p2p_listings p
+     JOIN birds b ON b.id = p.bird_id
+     JOIN users s ON s.id = p.seller_id
+     LEFT JOIN users u ON u.id = p.buyer_id
+     WHERE p.status = 'SOLD' AND p.sold_at IS NOT NULL
+     ORDER BY p.sold_at DESC LIMIT 20`,
+  );
 
   for (const r of p2pRows) {
     items.push({
@@ -806,23 +818,21 @@ export function getAdminAuditFeed(db: DatabaseSync): AdminActivityItemDTO[] {
     });
   }
 
-  const mktRows = db
-    .prepare(
-      `SELECT ml.id, ml.price, ml.sold_at, b.name AS bird_name, b.leg_band, u.username AS buyer_name
-       FROM market_listings ml
-       JOIN birds b ON b.id = ml.bird_id
-       LEFT JOIN users u ON u.id = ml.buyer_id
-       WHERE ml.status = 'SOLD' AND ml.sold_at IS NOT NULL
-       ORDER BY ml.sold_at DESC LIMIT 20`,
-    )
-    .all() as Array<{
+  const mktRows = await db.all<{
     id: string;
     price: number;
     sold_at: number;
     bird_name: string;
     leg_band: string;
     buyer_name: string | null;
-  }>;
+  }>(
+    `SELECT ml.id, ml.price, ml.sold_at, b.name AS bird_name, b.leg_band, u.username AS buyer_name
+     FROM market_listings ml
+     JOIN birds b ON b.id = ml.bird_id
+     LEFT JOIN users u ON u.id = ml.buyer_id
+     WHERE ml.status = 'SOLD' AND ml.sold_at IS NOT NULL
+     ORDER BY ml.sold_at DESC LIMIT 20`,
+  );
 
   for (const r of mktRows) {
     items.push({
@@ -834,7 +844,7 @@ export function getAdminAuditFeed(db: DatabaseSync): AdminActivityItemDTO[] {
     });
   }
 
-  const payReqs = listPaymentRequests(db).slice(0, 20);
+  const payReqs = (await listPaymentRequests(db)).slice(0, 20);
   for (const p of payReqs) {
     items.push({
       id: `pay_${p.id}`,

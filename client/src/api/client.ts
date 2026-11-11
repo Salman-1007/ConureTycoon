@@ -8,6 +8,7 @@ import type {
   AviaryStateDTO,
   BreedingCageDTO,
   ConureDTO,
+  FosterClutchResponseDTO,
   HatchResponseDTO,
   MutationConfigDTO,
   P2PListingDTO,
@@ -33,8 +34,11 @@ export class ApiError extends Error {
   }
 }
 
+const API_BASE = ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(url, {
+  const targetUrl = API_BASE && url.startsWith('/') ? `${API_BASE}${url}` : url;
+  const res = await fetch(targetUrl, {
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
@@ -128,6 +132,11 @@ export const api = {
   collectHatch: (cageId: string) =>
     request<HatchResponseDTO>(`/api/breeding/collect/${cageId}`, {
       method: 'POST',
+    }),
+  fosterClutch: (sourceCageId: string, targetCageId: string) =>
+    request<FosterClutchResponseDTO>('/api/breeding/foster', {
+      method: 'POST',
+      body: JSON.stringify({ sourceCageId, targetCageId }),
     }),
 
   getShowroom: () => request<ShowroomOverviewDTO>('/api/showroom'),

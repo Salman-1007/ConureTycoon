@@ -8,11 +8,11 @@ import { seedWorldData } from '../server/seed.js';
 import { enterShowroom, getShowroomOverview } from '../server/showroomService.js';
 
 describe('Aviary Exhibition Showroom & Seasonal Badges (Stage 8)', () => {
-  it('judges entries deterministically, updates leaderboards, and awards seasonal prestige badges', () => {
-    const db = createDatabase(':memory:');
-    seedWorldData(db);
+  it('judges entries deterministically, updates leaderboards, and awards seasonal prestige badges', async () => {
+    const db = await createDatabase(':memory:');
+    await seedWorldData(db);
 
-    const { user } = registerUser(db, {
+    const { user } = await registerUser(db, {
       username: 'showbreeder',
       password: 'secret',
       displayName: 'Zara',
@@ -20,9 +20,9 @@ describe('Aviary Exhibition Showroom & Seasonal Badges (Stage 8)', () => {
       startingCoins: 15000,
     });
 
-    const clock = getServerClock(db);
+    const clock = await getServerClock(db);
     const moonGeno = createGenotypeForMutation('MOONCHK', 'FEMALE');
-    const champion = insertBirdRecord(db, {
+    const champion = await insertBirdRecord(db, {
       name: 'Luna',
       genotype: moonGeno,
       visualPhenotype: 'MOONCHK',
@@ -40,15 +40,15 @@ describe('Aviary Exhibition Showroom & Seasonal Badges (Stage 8)', () => {
       status: 'READY',
     });
 
-    const outcome = enterShowroom(db, user.id, champion.id, 'COLOR_MUTATION');
+    const outcome = await enterShowroom(db, user.id, champion.id, 'COLOR_MUTATION');
     expect(outcome.entry.rankPosition).toBe(1);
     expect(outcome.entry.breakdown.totalScore).toBeGreaterThan(70);
     expect(outcome.prizeCoins).toBe(6500);
     expect(outcome.awardedBadge?.badgeTitle).toContain('Master Mooncheek Breeder');
 
-    const overview = getShowroomOverview(db);
+    const overview = await getShowroomOverview(db);
     expect(overview.leaderboards.COLOR_MUTATION[0].birdName).toBe('Luna');
 
-    db.close();
+    await db.close();
   });
 });

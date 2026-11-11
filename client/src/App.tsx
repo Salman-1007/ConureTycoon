@@ -2,7 +2,9 @@ import React, { useState } from 'react';
 import { Feather } from 'lucide-react';
 import type { ConureDTO } from '@shared/api-types';
 import { NavShell } from './components/NavShell';
+import { SupportCreatorModal } from './components/SupportCreatorModal';
 import { GameProvider, useGame } from './context/GameContext';
+import { AdminPage } from './pages/AdminPage';
 import { AuthSetupPage } from './pages/AuthSetupPage';
 import { AviaryPage } from './pages/AviaryPage';
 import { CompendiumPage } from './pages/CompendiumPage';
@@ -12,7 +14,7 @@ import { ShowroomPage } from './pages/ShowroomPage';
 import { TradingPostPage } from './pages/TradingPostPage';
 
 function MainRouter() {
-  const { user, loading, activeTab, setActiveTab } = useGame();
+  const { user, loading, activeTab, setActiveTab, supportOpen, setSupportOpen } = useGame();
   const [showroomPreselect, setShowroomPreselect] = useState<ConureDTO | null>(null);
 
   if (loading) {
@@ -28,7 +30,12 @@ function MainRouter() {
   }
 
   if (!user) {
-    return <AuthSetupPage />;
+    return (
+      <>
+        <AuthSetupPage />
+        <SupportCreatorModal open={supportOpen} onClose={() => setSupportOpen(false)} />
+      </>
+    );
   }
 
   return (
@@ -51,6 +58,7 @@ function MainRouter() {
         />
       )}
       {activeTab === 'compendium' && <CompendiumPage />}
+      {activeTab === 'admin' && user.isAdmin && <AdminPage onExit={() => setActiveTab('hub')} />}
     </NavShell>
   );
 }

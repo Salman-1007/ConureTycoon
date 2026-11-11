@@ -11,6 +11,7 @@ import type {
 import { api } from '../api/client';
 
 export type NavTab = 'hub' | 'market' | 'aviary' | 'trading' | 'showroom' | 'compendium' | 'admin';
+export type MarketSection = 'wild' | 'choice' | 'special';
 
 export interface ToastNotice {
   id: string;
@@ -31,6 +32,9 @@ interface GameContextValue {
   loading: boolean;
   activeTab: NavTab;
   setActiveTab: (tab: NavTab) => void;
+  marketSection: MarketSection;
+  setMarketSection: (section: MarketSection) => void;
+  openChoiceBird: () => void;
   supportOpen: boolean;
   setSupportOpen: (open: boolean) => void;
   toasts: ToastNotice[];
@@ -56,7 +60,13 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const [serverTime, setServerTime] = useState<ServerTimeDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<NavTab>('hub');
+  const [marketSection, setMarketSection] = useState<MarketSection>('wild');
   const [supportOpen, setSupportOpen] = useState(false);
+
+  const openChoiceBird = useCallback(() => {
+    setMarketSection('choice');
+    setActiveTab('market');
+  }, []);
   const [toasts, setToasts] = useState<ToastNotice[]>([]);
 
   // Server clock delta tracking (drift-proof against local client clock changes)
@@ -135,6 +145,8 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     lastBucketRef.current = serverTime.currentHourBucketUtc;
   }, [serverTime]);
 
+  const lastRevealCheckRef = useRef<number>(0);
+
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now() + serverDeltaRef.current;
@@ -146,9 +158,17 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
           refreshMarket().catch(() => {});
         }
       }
+      if (
+        user &&
+        birds.some((b) => !b.geneticsRevealed && b.geneticsRevealTimestamp > 0 && now >= b.geneticsRevealTimestamp) &&
+        now - lastRevealCheckRef.current > 4000
+      ) {
+        lastRevealCheckRef.current = now;
+        refreshAviary().catch(() => {});
+      }
     }, 1000);
     return () => clearInterval(interval);
-  }, [user, serverTime, refreshMarket]);
+  }, [user, serverTime, birds, refreshMarket, refreshAviary]);
 
   const logout = useCallback(async () => {
     await api.logout();
@@ -174,6 +194,9 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       loading,
       activeTab,
       setActiveTab,
+      marketSection,
+      setMarketSection,
+      openChoiceBird,
       supportOpen,
       setSupportOpen,
       toasts,
@@ -197,6 +220,8 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
       effectiveNowMs,
       loading,
       activeTab,
+      marketSection,
+      openChoiceBird,
       supportOpen,
       toasts,
       pushToast,

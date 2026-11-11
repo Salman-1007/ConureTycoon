@@ -1,9 +1,9 @@
 import crypto from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
 import type { BirdLifecycleStatus, ConureDTO } from '../shared/api-types.js';
 import { getMutationMeta, normalizeGeneKey } from '../shared/genetics/catalog.js';
 import { computeVisibleSplits, type PedigreeBirdRecord } from '../shared/genetics/pedigree.js';
 import type { BaseLocusKey, BirdGenotype, MutationKey, Sex } from '../shared/genetics/types.js';
+import type { DbExecutor } from './db.js';
 
 export const PLAYER_LEVELS = [
   { level: 1, title: 'Hatchling Keeper', xpRequired: 0 },
@@ -38,6 +38,8 @@ export interface BirdRow {
   original_breeder_name: string;
   current_owner_id: string | null;
   hatch_timestamp: number;
+  genetics_reveal_at?: number;
+  genetics_processed?: number;
   maturation_timestamp: number;
   cooldown_until: number;
   generation_depth: number;
@@ -82,12 +84,12 @@ export function parseJsonArray<T = string>(raw: string | null | undefined): T[] 
   }
 }
 
-export function generateUniqueLegBand(db: DatabaseSync, nowMs: number): string {
+export async function generateUniqueLegBand(db: DbExecutor, nowMs: number): Promise<string> {
   const year = new Date(nowMs).getUTCFullYear();
   for (let i = 0; i < 16; i++) {
     const code = crypto.randomBytes(2).toString('hex').toUpperCase();
     const band = `GCC-${year}-${code}`;
-    const exists = db.prepare('SELECT 1 FROM birds WHERE leg_band = ?').get(band);
+    const exists = await db.get('SELECT 1 FROM birds WHERE leg_band = ?', band);
     if (!exists) return band;
   }
   return `GCC-${year}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
@@ -114,10 +116,8 @@ export function computeLifecycleStatus(row: BirdRow, nowMs: number): BirdLifecyc
   return 'READY';
 }
 
-export function getUserDiscoveredGenes(db: DatabaseSync, userId: string): Set<string> {
-  const rows = db
-    .prepare('SELECT gene_key FROM user_discovered_genes WHERE user_id = ?')
-    .all(userId) as Array<{ gene_key: string }>;
+export async function getUserDiscoveredGenes(db: DbExecutor, userId: string): Promise<Set<string>> {
+  const rows = await db.all<{ gene_key: string }>('SELECT gene_key FROM user_discovered_genes WHERE user_id = ?', userId);
   return new Set(rows.map((r) => normalizeGeneKey(r.gene_key)));
 }
 
@@ -139,13 +139,13 @@ export function toPedigreeRecord(row: BirdRow): PedigreeBirdRecord {
   };
 }
 
-export function loadAllBirdsMap(db: DatabaseSync): Map<string, PedigreeBirdRecord> {
-  const rows = db.prepare('SELECT * FROM birds').all() as unknown as BirdRow[];
+export async function loadAllBirdsMap(db: DbExecutor): Promise<Map<string, PedigreeBirdRecord>> {
+  const rows = await db.all<BirdRow>('SELECT * FROM birds');
   return new Map(rows.map((r) => [r.id, toPedigreeRecord(r)]));
 }
 
-export function loadOwnerNamesMap(db: DatabaseSync): Map<string, string> {
-  const rows = db.prepare('SELECT id, display_name FROM users').all() as Array<{ id: string; display_name: string }>;
+export async function loadOwnerNamesMap(db: DbExecutor): Promise<Map<string, string>> {
+  const rows = await db.all<{ id: string; display_name: string }>('SELECT id, display_name FROM users');
   return new Map(rows.map((r) => [r.id, r.display_name]));
 }
 
@@ -165,8 +165,8 @@ export interface MutationConfigRow {
   updated_at: number;
 }
 
-export function loadMutationConfigsMap(db: DatabaseSync): Map<string, MutationConfigRow> {
-  const rows = db.prepare('SELECT * FROM mutation_configs').all() as unknown as MutationConfigRow[];
+export async function loadMutationConfigsMap(db: DbExecutor): Promise<Map<string, MutationConfigRow>> {
+  const rows = await db.all<MutationConfigRow>('SELECT * FROM mutation_configs');
   return new Map(rows.map((r) => [r.mutation_key, r]));
 }
 
@@ -197,26 +197,32 @@ export function toSanitizedConureDTO(
   const father = row.father_id ? birdLookup.get(row.father_id) ?? null : null;
   const mother = row.mother_id ? birdLookup.get(row.mother_id) ?? null : null;
 
-  const visibleSplits = maskAllSplits
-    ? []
-    : computeVisibleSplits(
-        record,
-        father,
-        mother,
-        viewerDiscoveredGenes,
-        Boolean(viewerId && row.current_owner_id === viewerId),
-      );
+  const revealAt = row.genetics_reveal_at ?? 0;
+  const geneticsRevealed = revealAt <= 0 || nowMs >= revealAt;
+
+  const visibleSplits =
+    maskAllSplits || !geneticsRevealed
+      ? []
+      : computeVisibleSplits(
+          record,
+          father,
+          mother,
+          viewerDiscoveredGenes,
+          Boolean(viewerId && row.current_owner_id === viewerId),
+        );
 
   return {
     id: row.id,
     legBand: row.leg_band,
     name: row.name,
     sex: row.sex,
-    visualPhenotype: row.visual_phenotype,
-    phenotypeName: override?.name || meta.name,
-    rarity: override?.rarity || meta.rarity,
-    assetUrl: resolveMutationAssetUrl(row.visual_phenotype, override),
-    accentHex: override?.accent_hex || meta.accentHex,
+    visualPhenotype: geneticsRevealed ? row.visual_phenotype : 'WT',
+    phenotypeName: geneticsRevealed ? override?.name || meta.name : 'Downy Chick (Genetics Developing)',
+    rarity: geneticsRevealed ? override?.rarity || meta.rarity : 'Downy Chick',
+    assetUrl: geneticsRevealed
+      ? resolveMutationAssetUrl(row.visual_phenotype, override)
+      : '/assets/conures/chick_downy.svg',
+    accentHex: geneticsRevealed ? override?.accent_hex || meta.accentHex : '#D8C79D',
     visibleSplits,
     plumageSymmetry: Number(row.plumage_symmetry.toFixed(1)),
     fatherId: row.father_id,
@@ -226,6 +232,8 @@ export function toSanitizedConureDTO(
     currentOwnerId: row.current_owner_id,
     currentOwnerName: row.current_owner_id ? ownerNames.get(row.current_owner_id) ?? null : null,
     hatchTimestamp: row.hatch_timestamp,
+    geneticsRevealTimestamp: revealAt,
+    geneticsRevealed,
     maturationTimestamp: row.maturation_timestamp,
     cooldownUntil: row.cooldown_until,
     generationDepth: row.generation_depth,
@@ -235,8 +243,8 @@ export function toSanitizedConureDTO(
   };
 }
 
-export function insertBirdRecord(
-  db: DatabaseSync,
+export async function insertBirdRecord(
+  db: DbExecutor,
   params: {
     id?: string;
     name: string;
@@ -251,23 +259,26 @@ export function insertBirdRecord(
     originalBreederName: string;
     currentOwnerId: string | null;
     hatchTimestamp: number;
+    geneticsRevealTimestamp?: number;
+    geneticsProcessed?: boolean;
     maturationTimestamp: number;
     generationDepth: number;
     status: BirdRow['status'];
   },
-): BirdRow {
+): Promise<BirdRow> {
   const id = params.id ?? `bird_${crypto.randomUUID()}`;
-  const legBand = generateUniqueLegBand(db, params.hatchTimestamp);
+  const legBand = await generateUniqueLegBand(db, params.hatchTimestamp);
+  const geneticsReveal = params.geneticsRevealTimestamp ?? 0;
+  const geneticsProcessed = params.geneticsProcessed !== undefined ? (params.geneticsProcessed ? 1 : 0) : geneticsReveal <= 0 ? 1 : 0;
 
-  db.prepare(
+  await db.run(
     `INSERT INTO birds (
       id, leg_band, name, sex, visual_phenotype, chromosome_payload,
       actual_splits, displayed_splits, plumage_symmetry,
       father_id, mother_id, original_breeder_id, original_breeder_name,
-      current_owner_id, hatch_timestamp, maturation_timestamp,
+      current_owner_id, hatch_timestamp, genetics_reveal_at, genetics_processed, maturation_timestamp,
       cooldown_until, generation_depth, breed_count, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?)`,
-  ).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?)`,
     id,
     legBand,
     params.name,
@@ -283,10 +294,12 @@ export function insertBirdRecord(
     params.originalBreederName,
     params.currentOwnerId,
     params.hatchTimestamp,
+    geneticsReveal,
+    geneticsProcessed,
     params.maturationTimestamp,
     params.generationDepth,
     params.status,
   );
 
-  return db.prepare('SELECT * FROM birds WHERE id = ?').get(id) as unknown as BirdRow;
+  return (await db.get<BirdRow>('SELECT * FROM birds WHERE id = ?', id))!;
 }

@@ -1,13 +1,12 @@
 import crypto from 'node:crypto';
-import type { DatabaseSync } from 'node:sqlite';
 import type { DiscoveredGeneDTO, NotificationDTO, UserBadgeDTO, UserProfileDTO } from '../shared/api-types.js';
 import { createGenotypeForMutation, deriveActualSplits, deriveVisualPhenotype } from '../shared/genetics/engine.js';
 import { getLevelInfo, insertBirdRecord } from './birdHelpers.js';
 import { getServerClock, isDevTimeToolsEnabled } from './clock.js';
-import { withTransaction } from './db.js';
+import { type AppDatabase, type DbExecutor, withTransaction } from './db.js';
 
 export const SESSION_COOKIE_NAME = 'gcct_session';
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const SESSION_TTL_MS = 10 * 24 * 60 * 60 * 1000;
 
 export interface UserRow {
   id: string;
@@ -43,9 +42,10 @@ export function verifyPassword(password: string, stored: string): boolean {
   return crypto.timingSafeEqual(derived, expected);
 }
 
-export function createSession(db: DatabaseSync, userId: string, nowMs = Date.now()): string {
+export async function createSession(db: DbExecutor, userId: string, nowMs = Date.now()): Promise<string> {
   const token = crypto.randomBytes(32).toString('hex');
-  db.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)').run(
+  await db.run(
+    'INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)',
     token,
     userId,
     nowMs,
@@ -54,25 +54,25 @@ export function createSession(db: DatabaseSync, userId: string, nowMs = Date.now
   return token;
 }
 
-export function getUserBySessionToken(db: DatabaseSync, token: string | undefined): UserRow | null {
+export async function getUserBySessionToken(db: DbExecutor, token: string | undefined): Promise<UserRow | null> {
   if (!token) return null;
   const now = Date.now();
-  const row = db
-    .prepare(
-      `SELECT u.* FROM sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.token = ? AND s.expires_at > ?`,
-    )
-    .get(token, now) as UserRow | undefined;
+  const row = await db.get<UserRow>(
+    `SELECT u.* FROM sessions s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.token = ? AND s.expires_at > ?`,
+    token,
+    now,
+  );
   return row ?? null;
 }
 
-export function deleteSession(db: DatabaseSync, token: string): void {
-  db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+export async function deleteSession(db: DbExecutor, token: string): Promise<void> {
+  await db.run('DELETE FROM sessions WHERE token = ?', token);
 }
 
-export function registerUser(
-  db: DatabaseSync,
+export async function registerUser(
+  db: AppDatabase | DbExecutor,
   params: {
     username: string;
     password: string;
@@ -80,7 +80,7 @@ export function registerUser(
     aviaryName: string;
     startingCoins?: number;
   },
-): { user: UserRow; token: string } {
+): Promise<{ user: UserRow; token: string }> {
   const cleanUsername = params.username.trim().toLowerCase();
   if (!/^[a-z0-9_.-]{3,32}$/.test(cleanUsername)) {
     throw new Error('Username must be 3-32 characters (letters, numbers, _, ., -).');
@@ -91,12 +91,12 @@ export function registerUser(
   const cleanDisplay = params.displayName.trim() || cleanUsername;
   const cleanAviary = params.aviaryName.trim() || `${cleanDisplay}'s Canopy Aviary`;
   const allowedCoins = Math.max(10000, Math.min(20000, Math.round(params.startingCoins ?? 15000)));
-  const clock = getServerClock(db);
+  const clock = await getServerClock(db);
   const nowMs = clock.effectiveNowMs;
   const wallNow = Date.now();
 
-  return withTransaction(db, () => {
-    const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(cleanUsername);
+  return withTransaction(db, async (tx) => {
+    const existing = await tx.get('SELECT id FROM users WHERE username = ?', cleanUsername);
     if (existing) {
       throw new Error('Username is already taken.');
     }
@@ -105,15 +105,24 @@ export function registerUser(
     const pwHash = hashPassword(params.password);
     const isAdmin = cleanUsername === 'salman' ? 1 : 0;
 
-    db.prepare(
+    await tx.run(
       `INSERT INTO users (
         id, username, password_hash, display_name, aviary_name,
         coins, xp, level, is_npc, is_admin, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, 0, 1, 0, ?, ?)`,
-    ).run(userId, cleanUsername, pwHash, cleanDisplay, cleanAviary, allowedCoins, isAdmin, wallNow);
+      userId,
+      cleanUsername,
+      pwHash,
+      cleanDisplay,
+      cleanAviary,
+      allowedCoins,
+      isAdmin,
+      wallNow,
+    );
 
     // Initial Aviary State: ONLY NORMAL_GREEN (WT) unlocked
-    db.prepare('INSERT INTO user_discovered_genes (user_id, gene_key, unlocked_at) VALUES (?, ?, ?)').run(
+    await tx.run(
+      'INSERT INTO user_discovered_genes (user_id, gene_key, unlocked_at) VALUES (?, ?, ?)',
       userId,
       'WT',
       nowMs,
@@ -136,7 +145,7 @@ export function registerUser(
 
     for (const spec of starterSpecs) {
       const genotype = createGenotypeForMutation('WT', spec.sex, spec.splits);
-      insertBirdRecord(db, {
+      await insertBirdRecord(tx, {
         name: spec.name,
         genotype,
         visualPhenotype: deriveVisualPhenotype(genotype),
@@ -155,57 +164,54 @@ export function registerUser(
       });
     }
 
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as UserRow;
-    const token = createSession(db, userId, wallNow);
+    const user = (await tx.get<UserRow>('SELECT * FROM users WHERE id = ?', userId))!;
+    const token = await createSession(tx, userId, wallNow);
     return { user, token };
   });
 }
 
-export function authenticateUser(
-  db: DatabaseSync,
+export async function authenticateUser(
+  db: DbExecutor,
   username: string,
   password: string,
-): { user: UserRow; token: string } {
+): Promise<{ user: UserRow; token: string }> {
   const cleanUsername = username.trim().toLowerCase();
-  const user = db
-    .prepare('SELECT * FROM users WHERE username = ? AND is_npc = 0')
-    .get(cleanUsername) as UserRow | undefined;
+  const user = await db.get<UserRow>('SELECT * FROM users WHERE username = ? AND is_npc = 0', cleanUsername);
   if (!user || !verifyPassword(password, user.password_hash)) {
     throw new Error('Invalid username or password.');
   }
-  const token = createSession(db, user.id, Date.now());
+  const token = await createSession(db, user.id, Date.now());
   return { user, token };
 }
 
-export function buildUserProfileDTO(db: DatabaseSync, user: UserRow): UserProfileDTO {
+export async function buildUserProfileDTO(db: DbExecutor, user: UserRow): Promise<UserProfileDTO> {
   const { current, next } = getLevelInfo(user.xp);
-  const discoveredGenes = db
-    .prepare('SELECT gene_key, unlocked_at FROM user_discovered_genes WHERE user_id = ? ORDER BY unlocked_at ASC')
-    .all(user.id) as Array<{ gene_key: string; unlocked_at: number }>;
+  const discoveredGenes = await db.all<{ gene_key: string; unlocked_at: number }>(
+    'SELECT gene_key, unlocked_at FROM user_discovered_genes WHERE user_id = ? ORDER BY unlocked_at ASC',
+    user.id,
+  );
 
-  const badges = db
-    .prepare('SELECT badge_key, badge_title, awarded_at FROM user_badges WHERE user_id = ? ORDER BY awarded_at DESC')
-    .all(user.id) as Array<{ badge_key: string; badge_title: string; awarded_at: number }>;
+  const badges = await db.all<{ badge_key: string; badge_title: string; awarded_at: number }>(
+    'SELECT badge_key, badge_title, awarded_at FROM user_badges WHERE user_id = ? ORDER BY awarded_at DESC',
+    user.id,
+  );
 
-  const notifications = db
-    .prepare(
-      'SELECT id, kind, title, message, read_flag, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 30',
-    )
-    .all(user.id) as Array<{
+  const notifications = await db.all<{
     id: string;
     kind: string;
     title: string;
     message: string;
     read_flag: number;
     created_at: number;
-  }>;
+  }>(
+    'SELECT id, kind, title, message, read_flag, created_at FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 30',
+    user.id,
+  );
 
   const isAdmin = user.username.toLowerCase() === 'salman' || Boolean(user.is_admin);
   let pendingPaymentsCount: number | undefined;
   if (isAdmin) {
-    const pendingRow = db
-      .prepare("SELECT COUNT(*) as c FROM payment_requests WHERE status = 'pending'")
-      .get() as { c: number } | undefined;
+    const pendingRow = await db.get<{ c: number }>("SELECT COUNT(*) as c FROM payment_requests WHERE status = 'pending'");
     pendingPaymentsCount = pendingRow?.c ?? 0;
   }
 
@@ -242,7 +248,7 @@ export function buildUserProfileDTO(db: DatabaseSync, user: UserRow): UserProfil
       read: Boolean(n.read_flag),
       createdAt: n.created_at,
     })),
-    devToolsEnabled: isDevTimeToolsEnabled(),
+    devToolsEnabled: isAdmin && isDevTimeToolsEnabled(),
     isAdmin,
     ...(pendingPaymentsCount !== undefined ? { pendingPaymentsCount } : {}),
   };
