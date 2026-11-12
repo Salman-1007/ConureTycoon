@@ -52,6 +52,7 @@ import {
   getActiveCagesForUser,
   previewBreedingPair,
   startBreedingPair,
+  syncAutoHatchesForUser,
   syncAviaryChickReveals,
 } from './breedingService.js';
 import {
@@ -110,6 +111,13 @@ function setSessionCookie(res: Response, token: string): void {
     maxAge: SESSION_TTL_MS,
     path: '/',
   });
+}
+
+async function syncUserAviaryProgress(db: AppDatabase, userId: string) {
+  const clock = await getServerClock(db);
+  const autoHatched = await syncAutoHatchesForUser(db, userId, clock.effectiveNowMs);
+  await syncAviaryChickReveals(db, userId, clock.effectiveNowMs);
+  return { clock, autoHatched };
 }
 
 export async function initializeAppData(db: AppDatabase): Promise<void> {
@@ -229,14 +237,15 @@ export function createApp(db: AppDatabase) {
   });
 
   app.get('/api/auth/me', requireAuth, async (req: AuthedRequest, res) => {
-    res.json({ user: await buildUserProfileDTO(db, req.user!) });
+    await syncUserAviaryProgress(db, req.user!.id);
+    const freshUser = (await db.get<UserRow>('SELECT * FROM users WHERE id = ?', req.user!.id)) ?? req.user!;
+    res.json({ user: await buildUserProfileDTO(db, freshUser) });
   });
 
-  // Aviary state
+  // Aviary state (automatically resolves due clutch hatches and chick genetic reveals)
   app.get('/api/aviary', requireAuth, async (req: AuthedRequest, res) => {
     const user = req.user!;
-    const clock = await getServerClock(db);
-    await syncAviaryChickReveals(db, user.id, clock.effectiveNowMs);
+    const { clock, autoHatched } = await syncUserAviaryProgress(db, user.id);
     const freshUser = (await db.get<UserRow>('SELECT * FROM users WHERE id = ?', user.id)) ?? user;
 
     const rows = await db.all<BirdRow>(
@@ -259,6 +268,7 @@ export function createApp(db: AppDatabase) {
       birds,
       activeCages,
       serverTime: clock,
+      ...(autoHatched.length > 0 ? { autoHatched } : {}),
     });
   });
 
@@ -329,13 +339,12 @@ export function createApp(db: AppDatabase) {
 
   app.get('/api/birds/:birdId/pedigree', requireAuth, async (req: AuthedRequest, res) => {
     const birdId = String(req.params.birdId);
+    const { clock } = await syncUserAviaryProgress(db, req.user!.id);
     const birdLookup = await loadAllBirdsMap(db);
     if (!birdLookup.has(birdId)) {
       res.status(404).json({ error: 'Bird not found.' });
       return;
     }
-    const clock = await getServerClock(db);
-    await syncAviaryChickReveals(db, req.user!.id, clock.effectiveNowMs);
     const discovered = await getUserDiscoveredGenes(db, req.user!.id);
     const tree = buildPedigreeTree(birdId, birdLookup, discovered, req.user!.id, 3);
     const row = await db.get<{ genetics_reveal_at?: number }>('SELECT genetics_reveal_at FROM birds WHERE id = ?', birdId);
@@ -376,6 +385,7 @@ export function createApp(db: AppDatabase) {
 
   app.post('/api/market/p2p', requireAuth, async (req: AuthedRequest, res) => {
     try {
+      await syncUserAviaryProgress(db, req.user!.id);
       const { birdId, askingPrice, sellerNote } = req.body ?? {};
       const listing = await listBirdOnP2P(db, req.user!.id, String(birdId ?? ''), Number(askingPrice), String(sellerNote ?? ''));
       res.status(201).json({ listing });
@@ -417,6 +427,7 @@ export function createApp(db: AppDatabase) {
 
   // Breeding Facility
   app.post('/api/breeding/preview', requireAuth, async (req: AuthedRequest, res) => {
+    await syncUserAviaryProgress(db, req.user!.id);
     const { birdAId, birdBId } = req.body ?? {};
     const preview = await previewBreedingPair(db, req.user!.id, String(birdAId ?? ''), String(birdBId ?? ''));
     res.json({
@@ -430,6 +441,7 @@ export function createApp(db: AppDatabase) {
 
   app.post('/api/breeding/pair', requireAuth, async (req: AuthedRequest, res) => {
     try {
+      await syncUserAviaryProgress(db, req.user!.id);
       const { birdAId, birdBId, acknowledgeInbreeding } = req.body ?? {};
       const cage = await startBreedingPair(
         db,
@@ -463,6 +475,7 @@ export function createApp(db: AppDatabase) {
 
   app.post('/api/breeding/foster', requireAuth, async (req: AuthedRequest, res) => {
     try {
+      await syncUserAviaryProgress(db, req.user!.id);
       const { sourceCageId, targetCageId } = req.body ?? {};
       const outcome = await fosterClutch(db, req.user!.id, String(sourceCageId ?? ''), String(targetCageId ?? ''));
       res.json(outcome);
@@ -482,6 +495,7 @@ export function createApp(db: AppDatabase) {
 
   app.post('/api/showroom/enter', requireAuth, async (req: AuthedRequest, res) => {
     try {
+      await syncUserAviaryProgress(db, req.user!.id);
       const { birdId, category } = req.body ?? {};
       const outcome = await enterShowroom(db, req.user!.id, String(birdId ?? ''), String(category ?? '') as ShowCategory);
       res.json(outcome);

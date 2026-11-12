@@ -539,6 +539,223 @@ export async function syncAviaryChickReveals(
 }
 
 /**
+ * Shared transactional resolver that hatches a breeding cage into chicks,
+ * applies the 5-chick foster overcrowding rule, releases parents with zero cooldown,
+ * and awards breeder XP. Returns null if the cage was already claimed concurrently.
+ */
+async function resolveCageHatchTx(
+  tx: DbExecutor,
+  ownerId: string,
+  cage: BreedingCageRow,
+  hatchTimestampMs: number,
+  viewNowMs: number,
+  survivalRng: () => number,
+  notifyOnRegularHatch: boolean,
+): Promise<HatchResponseDTO | null> {
+  // Atomic claim before inserting chicks prevents duplicate hatches on concurrent requests
+  const claimed = await tx.run(
+    'UPDATE breeding_cages SET hatched = 1, hatched_at = ? WHERE id = ? AND hatched = 0',
+    hatchTimestampMs,
+    cage.id,
+  );
+  if (claimed.changes === 0) {
+    return null;
+  }
+
+  const owner = (await tx.get<{ id: string; display_name: string; xp: number }>(
+    'SELECT id, display_name, xp FROM users WHERE id = ?',
+    ownerId,
+  ))!;
+  const maleRow = (await tx.get<BirdRow>('SELECT * FROM birds WHERE id = ?', cage.male_id))!;
+  const femaleRow = (await tx.get<BirdRow>('SELECT * FROM birds WHERE id = ?', cage.female_id))!;
+
+  const birdLookup = await loadAllBirdsMap(tx);
+  const clutchSpecs = await parseClutchSpecs(cage, tx);
+  const discoveredSet = await getUserDiscoveredGenes(tx, ownerId);
+
+  // First 5 chicks survive safely; any extra chicks beyond 5 have a 50/50 survival chance
+  const safeLimit = BREEDING_CONFIG.FOSTER_SAFE_MAX_CHICKS;
+  const survivingSpecs: ClutchOffspringSpec[] = [];
+  for (let i = 0; i < clutchSpecs.length; i++) {
+    if (i < safeLimit) {
+      survivingSpecs.push(clutchSpecs[i]);
+    } else if (survivalRng() < BREEDING_CONFIG.FOSTER_OVER_LIMIT_SURVIVAL_CHANCE) {
+      survivingSpecs.push(clutchSpecs[i]);
+    }
+  }
+
+  const fosterLostCount = clutchSpecs.length - survivingSpecs.length;
+  const isOvercrowded = clutchSpecs.length > safeLimit;
+
+  const insertedChickIds: string[] = [];
+  const createdNotifications: NotificationDTO[] = [];
+  const geneticsRevealAt = hatchTimestampMs + BREEDING_CONFIG.CHICK_GENETICS_REVEAL_MS;
+  const maturationAt = hatchTimestampMs + BREEDING_CONFIG.MATURATION_DURATION_MS;
+
+  for (const spec of survivingSpecs) {
+    const chickId = `bird_${crypto.randomUUID()}`;
+    assertNoPedigreeCycle(chickId, spec.fatherId, spec.motherId, birdLookup);
+
+    const visualPhenotype = deriveVisualPhenotype(spec.genotype);
+    const actualSplits = deriveActualSplits(spec.genotype);
+    const coiSymPenalty = spec.inbreedingCoi * 18;
+    const symDelta = (Math.random() - 0.42) * 12;
+    const plumageSymmetry = Math.max(62, Math.min(99.5, Number((spec.parentSymmetryAvg + symDelta - coiSymPenalty).toFixed(1))));
+    const initialDisplayedSplits = actualSplits.filter((g) => discoveredSet.has(g));
+
+    const chickRow = await insertBirdRecord(tx, {
+      id: chickId,
+      name: randomConureName(),
+      genotype: spec.genotype,
+      visualPhenotype,
+      actualSplits,
+      displayedSplits: initialDisplayedSplits,
+      plumageSymmetry,
+      fatherId: spec.fatherId,
+      motherId: spec.motherId,
+      originalBreederId: ownerId,
+      originalBreederName: owner.display_name,
+      currentOwnerId: ownerId,
+      hatchTimestamp: hatchTimestampMs,
+      geneticsRevealTimestamp: geneticsRevealAt,
+      geneticsProcessed: false,
+      maturationTimestamp: maturationAt,
+      generationDepth: spec.generationDepth,
+      status: 'READY',
+    });
+
+    insertedChickIds.push(chickRow.id);
+    birdLookup.set(chickRow.id, {
+      id: chickRow.id,
+      legBand: chickRow.leg_band,
+      name: chickRow.name,
+      sex: chickRow.sex,
+      visualPhenotype: chickRow.visual_phenotype,
+      actualSplits,
+      displayedSplits: initialDisplayedSplits,
+      fatherId: spec.fatherId,
+      motherId: spec.motherId,
+      originalBreederId: ownerId,
+      originalBreederName: owner.display_name,
+      generationDepth: spec.generationDepth,
+      hatchTimestamp: hatchTimestampMs,
+    });
+  }
+
+  if (isOvercrowded) {
+    const notifId = `ntf_${crypto.randomUUID()}`;
+    const title = fosterLostCount > 0 ? 'Foster Overcrowding Loss' : 'Overcrowded Foster Success!';
+    const message =
+      fosterLostCount > 0
+        ? `${maleRow.name} & ${femaleRow.name} hatched ${survivingSpecs.length} of ${clutchSpecs.length} chicks (${clutchSpecs.length - safeLimit} above the 5-chick safe limit; ${fosterLostCount} did not survive).`
+        : `${maleRow.name} & ${femaleRow.name} beat the odds and raised all ${survivingSpecs.length} chicks in an overcrowded nest!`;
+    await tx.run(
+      'INSERT INTO notifications (id, user_id, kind, title, message, read_flag, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)',
+      notifId,
+      ownerId,
+      'FOSTER_OUTCOME',
+      title,
+      message,
+      hatchTimestampMs,
+    );
+    createdNotifications.push({
+      id: notifId,
+      kind: 'FOSTER_OUTCOME',
+      title,
+      message,
+      read: false,
+      createdAt: hatchTimestampMs,
+    });
+  } else if (notifyOnRegularHatch) {
+    const notifId = `ntf_${crypto.randomUUID()}`;
+    const title = 'Clutch Hatched!';
+    const message = `${maleRow.name} & ${femaleRow.name} hatched ${survivingSpecs.length} downy chick(s) into your aviary. Both parents are immediately Ready!`;
+    await tx.run(
+      'INSERT INTO notifications (id, user_id, kind, title, message, read_flag, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)',
+      notifId,
+      ownerId,
+      'CLUTCH_HATCHED',
+      title,
+      message,
+      hatchTimestampMs,
+    );
+    createdNotifications.push({
+      id: notifId,
+      kind: 'CLUTCH_HATCHED',
+      title,
+      message,
+      read: false,
+      createdAt: hatchTimestampMs,
+    });
+  }
+
+  // Release parents immediately with zero cooldown & award breeder XP
+  await tx.run(
+    "UPDATE birds SET status = 'READY', cooldown_until = 0, breed_count = breed_count + 1 WHERE id IN (?, ?)",
+    maleRow.id,
+    femaleRow.id,
+  );
+  const xpGain = survivingSpecs.length * 45;
+  await tx.run('UPDATE users SET xp = xp + ? WHERE id = ?', xpGain, ownerId);
+
+  const ownerNames = await loadOwnerNamesMap(tx);
+  const mutationConfigs = await loadMutationConfigsMap(tx);
+  const chicks = [];
+  for (const id of insertedChickIds) {
+    const row = (await tx.get<BirdRow>('SELECT * FROM birds WHERE id = ?', id))!;
+    chicks.push(toSanitizedConureDTO(row, birdLookup, ownerNames, discoveredSet, ownerId, viewNowMs, false, mutationConfigs));
+  }
+
+  return {
+    cageId: cage.id,
+    chicks,
+    newlyDiscoveredGenes: [],
+    retroactivelyRevealedBirdIds: [],
+    notifications: createdNotifications,
+    ...(isOvercrowded ? { fosterOverloadTotal: clutchSpecs.length, fosterLostCount } : {}),
+  };
+}
+
+/**
+ * Automatically hatches any breeding cages whose incubation timer has completed,
+ * using hatch_ready_at as the true hatch timestamp so genetics reveal (+3h) and
+ * adulthood (+6h) stay synchronized even while offline.
+ */
+export async function syncAutoHatchesForUser(
+  db: AppDatabase | DbExecutor,
+  ownerId: string,
+  nowMs?: number,
+  options?: { survivalRng?: () => number },
+): Promise<HatchResponseDTO[]> {
+  const effectiveNow = nowMs ?? (await getServerClock(db)).effectiveNowMs;
+  const survivalRng = options?.survivalRng ?? Math.random;
+
+  const dueRows = await db.all<BreedingCageRow>(
+    'SELECT * FROM breeding_cages WHERE owner_id = ? AND hatched = 0 AND hatch_ready_at <= ? ORDER BY hatch_ready_at ASC',
+    ownerId,
+    effectiveNow,
+  );
+  if (dueRows.length === 0) return [];
+
+  return withTransaction(db, async (tx) => {
+    const freshDue = await tx.all<BreedingCageRow>(
+      'SELECT * FROM breeding_cages WHERE owner_id = ? AND hatched = 0 AND hatch_ready_at <= ? ORDER BY hatch_ready_at ASC',
+      ownerId,
+      effectiveNow,
+    );
+    const results: HatchResponseDTO[] = [];
+    for (const cage of freshDue) {
+      const hatchTime = Math.min(effectiveNow, cage.hatch_ready_at);
+      const outcome = await resolveCageHatchTx(tx, ownerId, cage, hatchTime, effectiveNow, survivalRng, true);
+      if (outcome) {
+        results.push(outcome);
+      }
+    }
+    return results;
+  });
+}
+
+/**
  * Resolves a hatched clutch once incubation completes.
  * First 5 chicks survive 100%; extra chicks beyond 5 roll a 50/50 survival check.
  * Newly hatched chicks stay downy for 3h (genetics revealed at +3h) and become adult at +6h.
@@ -575,142 +792,10 @@ export async function collectHatchedClutch(
       throw new BreedingError(`Eggs are still incubating (${minsLeft} min remaining).`, 400);
     }
 
-    // Atomic claim before inserting chicks prevents duplicate hatches on double-submit
-    const claimed = await tx.run('UPDATE breeding_cages SET hatched = 1, hatched_at = ? WHERE id = ? AND hatched = 0', nowMs, cageId);
-    if (claimed.changes === 0) {
+    const outcome = await resolveCageHatchTx(tx, ownerId, cage, nowMs, nowMs, survivalRng, false);
+    if (!outcome) {
       throw new BreedingError('This clutch has already been hatched and collected.', 409);
     }
-
-    const owner = (await tx.get<{ id: string; display_name: string; xp: number }>(
-      'SELECT id, display_name, xp FROM users WHERE id = ?',
-      ownerId,
-    ))!;
-    const maleRow = (await tx.get<BirdRow>('SELECT * FROM birds WHERE id = ?', cage.male_id))!;
-    const femaleRow = (await tx.get<BirdRow>('SELECT * FROM birds WHERE id = ?', cage.female_id))!;
-
-    const birdLookup = await loadAllBirdsMap(tx);
-    const clutchSpecs = await parseClutchSpecs(cage, tx);
-    const discoveredSet = await getUserDiscoveredGenes(tx, ownerId);
-
-    // First 5 chicks survive safely; any extra chicks beyond 5 have a 50/50 survival chance
-    const safeLimit = BREEDING_CONFIG.FOSTER_SAFE_MAX_CHICKS;
-    const survivingSpecs: ClutchOffspringSpec[] = [];
-    for (let i = 0; i < clutchSpecs.length; i++) {
-      if (i < safeLimit) {
-        survivingSpecs.push(clutchSpecs[i]);
-      } else if (survivalRng() < BREEDING_CONFIG.FOSTER_OVER_LIMIT_SURVIVAL_CHANCE) {
-        survivingSpecs.push(clutchSpecs[i]);
-      }
-    }
-
-    const fosterLostCount = clutchSpecs.length - survivingSpecs.length;
-    const isOvercrowded = clutchSpecs.length > safeLimit;
-
-    const insertedChickIds: string[] = [];
-    const createdNotifications: NotificationDTO[] = [];
-    const geneticsRevealAt = nowMs + BREEDING_CONFIG.CHICK_GENETICS_REVEAL_MS;
-    const maturationAt = nowMs + BREEDING_CONFIG.MATURATION_DURATION_MS;
-
-    for (const spec of survivingSpecs) {
-      const chickId = `bird_${crypto.randomUUID()}`;
-      assertNoPedigreeCycle(chickId, spec.fatherId, spec.motherId, birdLookup);
-
-      const visualPhenotype = deriveVisualPhenotype(spec.genotype);
-      const actualSplits = deriveActualSplits(spec.genotype);
-      const coiSymPenalty = spec.inbreedingCoi * 18;
-      const symDelta = (Math.random() - 0.42) * 12;
-      const plumageSymmetry = Math.max(62, Math.min(99.5, Number((spec.parentSymmetryAvg + symDelta - coiSymPenalty).toFixed(1))));
-      const initialDisplayedSplits = actualSplits.filter((g) => discoveredSet.has(g));
-
-      const chickRow = await insertBirdRecord(tx, {
-        id: chickId,
-        name: randomConureName(),
-        genotype: spec.genotype,
-        visualPhenotype,
-        actualSplits,
-        displayedSplits: initialDisplayedSplits,
-        plumageSymmetry,
-        fatherId: spec.fatherId,
-        motherId: spec.motherId,
-        originalBreederId: ownerId,
-        originalBreederName: owner.display_name,
-        currentOwnerId: ownerId,
-        hatchTimestamp: nowMs,
-        geneticsRevealTimestamp: geneticsRevealAt,
-        geneticsProcessed: false,
-        maturationTimestamp: maturationAt,
-        generationDepth: spec.generationDepth,
-        status: 'READY',
-      });
-
-      insertedChickIds.push(chickRow.id);
-      birdLookup.set(chickRow.id, {
-        id: chickRow.id,
-        legBand: chickRow.leg_band,
-        name: chickRow.name,
-        sex: chickRow.sex,
-        visualPhenotype: chickRow.visual_phenotype,
-        actualSplits,
-        displayedSplits: initialDisplayedSplits,
-        fatherId: spec.fatherId,
-        motherId: spec.motherId,
-        originalBreederId: ownerId,
-        originalBreederName: owner.display_name,
-        generationDepth: spec.generationDepth,
-        hatchTimestamp: nowMs,
-      });
-    }
-
-    if (isOvercrowded) {
-      const notifId = `ntf_${crypto.randomUUID()}`;
-      const title = fosterLostCount > 0 ? 'Foster Overcrowding Loss' : 'Overcrowded Foster Success!';
-      const message =
-        fosterLostCount > 0
-          ? `${maleRow.name} & ${femaleRow.name} hatched ${survivingSpecs.length} of ${clutchSpecs.length} chicks (${clutchSpecs.length - safeLimit} above the 5-chick safe limit; ${fosterLostCount} did not survive).`
-          : `${maleRow.name} & ${femaleRow.name} beat the odds and raised all ${survivingSpecs.length} chicks in an overcrowded nest!`;
-      await tx.run(
-        'INSERT INTO notifications (id, user_id, kind, title, message, read_flag, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)',
-        notifId,
-        ownerId,
-        'FOSTER_OUTCOME',
-        title,
-        message,
-        nowMs,
-      );
-      createdNotifications.push({
-        id: notifId,
-        kind: 'FOSTER_OUTCOME',
-        title,
-        message,
-        read: false,
-        createdAt: nowMs,
-      });
-    }
-
-    // Release parents immediately with zero cooldown & award breeder XP
-    await tx.run(
-      "UPDATE birds SET status = 'READY', cooldown_until = 0, breed_count = breed_count + 1 WHERE id IN (?, ?)",
-      maleRow.id,
-      femaleRow.id,
-    );
-    const xpGain = survivingSpecs.length * 45;
-    await tx.run('UPDATE users SET xp = xp + ? WHERE id = ?', xpGain, ownerId);
-
-    const ownerNames = await loadOwnerNamesMap(tx);
-    const mutationConfigs = await loadMutationConfigsMap(tx);
-    const chicks = [];
-    for (const id of insertedChickIds) {
-      const row = (await tx.get<BirdRow>('SELECT * FROM birds WHERE id = ?', id))!;
-      chicks.push(toSanitizedConureDTO(row, birdLookup, ownerNames, discoveredSet, ownerId, nowMs, false, mutationConfigs));
-    }
-
-    return {
-      cageId,
-      chicks,
-      newlyDiscoveredGenes: [],
-      retroactivelyRevealedBirdIds: [],
-      notifications: createdNotifications,
-      ...(isOvercrowded ? { fosterOverloadTotal: clutchSpecs.length, fosterLostCount } : {}),
-    };
+    return outcome;
   });
 }

@@ -158,6 +158,7 @@ export interface AviaryStateDTO {
   birds: ConureDTO[];
   activeCages: BreedingCageDTO[];
   serverTime: ServerTimeDTO;
+  autoHatched?: HatchResponseDTO[];
 }
 
 export interface PairPreviewResponseDTO {

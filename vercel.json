@@ -1,6 +1,11 @@
 {
     "rewrites": [{
-        "source": "/(.*)",
-        "destination": "/index.html"
-    }]
+            "source": "/api/(.*)",
+            "destination": "https://conuretycoon.onrender.com/api/$1"
+        },
+        {
+            "source": "/((?!api/|assets/|favicon).*)",
+            "destination": "/index.html"
+        }
+    ]
 }

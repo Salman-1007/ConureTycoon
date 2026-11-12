@@ -365,6 +365,45 @@ describe('Breeding Timers, Zero Cooldown, Fostering & Admin Test Lab Rules', () 
       expect(fosterRes.status).toBe(200);
       expect(fosterRes.json.transferredCount).toBe(p1.json.cage.clutchSize);
       expect(fosterRes.json.totalInTarget).toBe(p1.json.cage.clutchSize + p2.json.cage.clutchSize);
+
+      // Advance +6h so incubation finishes, then load Aviary directly WITHOUT clicking any hatch button
+      await postJson('/api/dev/advance-time', { hours: 6 }, adminToken);
+      const afterHatchAviary = await (
+        await fetch(`${baseUrl}/api/aviary`, {
+          headers: { Authorization: `Bearer ${playerToken}` },
+        })
+      ).json();
+      expect(afterHatchAviary.activeCages).toHaveLength(0);
+      expect(afterHatchAviary.autoHatched).toHaveLength(1);
+      expect(afterHatchAviary.autoHatched[0].chicks.length).toBeGreaterThanOrEqual(5);
+
+      // Parents of p2 must already be READY with 0 cooldown after auto-hatch
+      const p2Sire = afterHatchAviary.birds.find((b: any) => b.id === males[1].id);
+      const p2Dam = afterHatchAviary.birds.find((b: any) => b.id === females[1].id);
+      expect(p2Sire.lifecycleStatus).toBe('READY');
+      expect(p2Dam.lifecycleStatus).toBe('READY');
+
+      // Verify full seamless offline catch-up: pair again, jump +18h (6h lay + 6h hatch + 6h full grow),
+      // and confirm a single GET /api/aviary hatches, reveals genetics, and produces READY adults!
+      const p3 = await postJson(
+        '/api/breeding/pair',
+        { birdAId: males[0].id, birdBId: females[0].id, acknowledgeInbreeding: true },
+        playerToken,
+      );
+      expect(p3.status).toBe(201);
+      await postJson('/api/dev/advance-time', { hours: 18 }, adminToken);
+      const offlineCatchupAviary = await (
+        await fetch(`${baseUrl}/api/aviary`, {
+          headers: { Authorization: `Bearer ${playerToken}` },
+        })
+      ).json();
+      expect(offlineCatchupAviary.activeCages).toHaveLength(0);
+      expect(offlineCatchupAviary.autoHatched).toHaveLength(1);
+      const caughtUpChicks = offlineCatchupAviary.birds.filter(
+        (b: any) => b.fatherId === males[0].id && b.motherId === females[0].id,
+      );
+      expect(caughtUpChicks.length).toBe(p3.json.cage.clutchSize);
+      expect(caughtUpChicks.every((c: any) => c.geneticsRevealed && c.lifecycleStatus === 'READY')).toBe(true);
     });
   });
 });
