@@ -97,7 +97,26 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     setBirds(data.birds);
     setActiveCages(data.activeCages);
     syncClock(data.serverTime);
-  }, [syncClock]);
+
+    if (data.autoHatched && data.autoHatched.length > 0) {
+      for (const hatched of data.autoHatched) {
+        const fosterNotice = hatched.notifications.find((n) => n.kind === 'FOSTER_OUTCOME');
+        if (fosterNotice) {
+          pushToast({
+            tone: hatched.fosterLostCount && hatched.fosterLostCount > 0 ? 'gold' : 'green',
+            title: fosterNotice.title,
+            message: fosterNotice.message,
+          });
+        } else {
+          pushToast({
+            tone: 'green',
+            title: 'Eggs Hatched Automatically!',
+            message: `${hatched.chicks.length} downy chick(s) joined your aviary. Parents are immediately Ready!`,
+          });
+        }
+      }
+    }
+  }, [syncClock, pushToast]);
 
   const refreshMarket = useCallback(async () => {
     const data = await api.getSystemMarket();
@@ -145,7 +164,7 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     lastBucketRef.current = serverTime.currentHourBucketUtc;
   }, [serverTime]);
 
-  const lastRevealCheckRef = useRef<number>(0);
+  const lastAviarySyncRef = useRef<number>(0);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -158,17 +177,17 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
           refreshMarket().catch(() => {});
         }
       }
-      if (
-        user &&
-        birds.some((b) => !b.geneticsRevealed && b.geneticsRevealTimestamp > 0 && now >= b.geneticsRevealTimestamp) &&
-        now - lastRevealCheckRef.current > 4000
-      ) {
-        lastRevealCheckRef.current = now;
+      const hasDueCage = activeCages.some((c) => now >= c.hatchReadyAt);
+      const hasDueReveal = birds.some(
+        (b) => !b.geneticsRevealed && b.geneticsRevealTimestamp > 0 && now >= b.geneticsRevealTimestamp,
+      );
+      if (user && (hasDueCage || hasDueReveal) && Date.now() - lastAviarySyncRef.current > 3000) {
+        lastAviarySyncRef.current = Date.now();
         refreshAviary().catch(() => {});
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [user, serverTime, birds, refreshMarket, refreshAviary]);
+  }, [user, serverTime, activeCages, birds, refreshMarket, refreshAviary]);
 
   const logout = useCallback(async () => {
     await api.logout();

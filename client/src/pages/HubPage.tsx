@@ -1,5 +1,5 @@
 import React from 'react';
-import { Award, BookOpen, Clock, Coffee, Dna, Feather, Heart, ShoppingBag, Sparkles, Store } from 'lucide-react';
+import { Award, BookOpen, Clock, Coffee, Dna, Feather, ShoppingBag, Sparkles, Store } from 'lucide-react';
 import { useGame } from '../context/GameContext';
 import { formatCoins, formatDuration, getLiveBirdStatus } from '../components/format';
 
@@ -8,7 +8,6 @@ export function HubPage() {
   if (!user) return null;
 
   const readyCount = birds.filter((b) => getLiveBirdStatus(b, effectiveNowMs) === 'READY').length;
-  const readyToHatch = activeCages.filter((c) => effectiveNowMs >= c.hatchReadyAt).length;
   const activeMarketCount = systemMarket.filter((l) => l.status === 'ACTIVE').length;
   const marketLeft = serverTime ? Math.max(0, serverTime.nextRefreshUtcMs - effectiveNowMs) : 0;
 
@@ -106,25 +105,6 @@ export function HubPage() {
         </div>
       </section>
 
-      {/* Active Hatch Alert */}
-      {readyToHatch > 0 && (
-        <div className="brass-panel flex items-center justify-between gap-4 rounded-xl border-amber-300/70 p-4">
-          <div className="flex items-center gap-3">
-            <Heart className="h-5 w-5 text-amber-300" />
-            <span className="text-sm font-bold text-[#F6EFE2]">
-              {readyToHatch} breeding {readyToHatch === 1 ? 'clutch has' : 'clutches have'} completed incubation and {readyToHatch === 1 ? 'is' : 'are'} ready to hatch!
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setActiveTab('aviary')}
-            className="rounded-lg bg-[#E8B84B] px-4 py-2 text-xs font-extrabold text-[#141A15] hover:bg-[#F2C75C]"
-          >
-            Open Nest Boxes
-          </button>
-        </div>
-      )}
-
       {/* Navigation Cards */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
         {wings.map((w) => {
@@ -154,7 +134,7 @@ export function HubPage() {
               <Dna className="h-4 w-4" /> Avian Genetics Rulebook
             </div>
             <ul className="mt-2.5 space-y-1.5 text-xs text-[#C6D2C7]">
-              <li>• Pairs lay eggs in <span className="font-mono-num text-[#E8B84B]">1–6h</span>; eggs hatch in <span className="font-mono-num text-[#E8B84B]">6h</span> with zero cooldown.</li>
+              <li>• Pairs lay eggs in <span className="font-mono-num text-[#E8B84B]">1–6h</span>; chicks hatch automatically in <span className="font-mono-num text-[#E8B84B]">6h</span> with zero cooldown.</li>
               <li>• Chicks display genetics after <span className="font-mono-num text-amber-300">3h</span> and reach adulthood 3h later.</li>
               <li>• Foster clutches to free parents early — over 5 chicks in a nest risks 50/50 survival!</li>
             </ul>

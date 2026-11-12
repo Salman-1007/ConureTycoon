@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ArrowRightLeft, Egg, Feather, Heart, Sparkles, X } from 'lucide-react';
-import type { BreedingCageDTO, ConureDTO, HatchResponseDTO, PairPreviewResponseDTO } from '@shared/api-types';
+import { AlertTriangle, ArrowRightLeft, Egg, Feather, Heart, X } from 'lucide-react';
+import type { BreedingCageDTO, ConureDTO, PairPreviewResponseDTO } from '@shared/api-types';
 import { api, ApiError } from '../api/client';
 import { BirdDetailModal } from '../components/BirdDetailModal';
 import { ConureCard } from '../components/ConureCard';
@@ -23,10 +23,33 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
     birdB: ConureDTO;
     preview: PairPreviewResponseDTO;
   } | null>(null);
-  const [hatchResult, setHatchResult] = useState<HatchResponseDTO | null>(null);
   const [fosterSource, setFosterSource] = useState<BreedingCageDTO | null>(null);
   const [fosterTargetId, setFosterTargetId] = useState<string>('');
   const [busy, setBusy] = useState(false);
+
+  const filterCounts = useMemo(() => {
+    const counts: Record<AviaryFilter, number> = {
+      ALL: birds.length,
+      READY: 0,
+      MALE: 0,
+      FEMALE: 0,
+      JUVENILE: 0,
+      BREEDING: 0,
+      COOLDOWN: 0,
+      MARKET_P2P: 0,
+    };
+    for (const b of birds) {
+      const live = getLiveBirdStatus(b, effectiveNowMs);
+      if (b.sex === 'MALE') counts.MALE++;
+      else counts.FEMALE++;
+      if (live === 'READY') counts.READY++;
+      else if (live === 'JUVENILE') counts.JUVENILE++;
+      else if (live === 'BREEDING' || live === 'INCUBATING') counts.BREEDING++;
+      else if (live === 'COOLDOWN') counts.COOLDOWN++;
+      else if (live === 'MARKET_P2P') counts.MARKET_P2P++;
+    }
+    return counts;
+  }, [birds, effectiveNowMs]);
 
   const filtered = useMemo(() => {
     return birds.filter((b) => {
@@ -103,32 +126,6 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
     }
   };
 
-  const handleHatch = async (cageId: string) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const outcome = await api.collectHatch(cageId);
-      await refreshAviary();
-      setHatchResult(outcome);
-      if (outcome.notifications.length > 0) {
-        for (const n of outcome.notifications) {
-          pushToast({ tone: 'green', title: n.title, message: n.message });
-        }
-      }
-      if (outcome.fosterLostCount && outcome.fosterLostCount > 0) {
-        pushToast({
-          tone: 'gold',
-          title: 'Overcrowded Nest Loss',
-          message: `${outcome.fosterLostCount} extra chick(s) beyond 5 did not survive hatching.`,
-        });
-      }
-    } catch (err) {
-      pushToast({ tone: 'red', title: 'Cannot Hatch', message: err instanceof ApiError ? err.message : 'Wait longer.' });
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const handleFoster = async () => {
     if (!fosterSource || !fosterTargetId || busy) return;
     setBusy(true);
@@ -153,16 +150,16 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="brass-panel flex flex-col gap-3 rounded-2xl p-5 md:flex-row md:items-center md:justify-between">
+      <div className="brass-panel flex flex-col gap-2.5 rounded-2xl p-3.5 sm:gap-3 sm:p-5 md:flex-row md:items-center md:justify-between">
         <div>
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#E8B84B]">
-            <Feather className="h-4 w-4" /> Aviary Sanctuary &amp; Breeding Wing
+          <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-[#E8B84B] sm:text-xs">
+            <Feather className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> Aviary Sanctuary &amp; Breeding Wing
           </div>
-          <h1 className="font-display mt-1 text-2xl font-bold text-[#F6EFE2]">Your Flock ({birds.length})</h1>
-          <p className="mt-1 text-xs text-[#9EB09F]">
-            Inspect closed leg bands, explore 3-generation pedigrees, and assign compatible Male (ZZ) + Female (ZW) pairs to breeding cages.
+          <h1 className="font-display mt-0.5 text-xl font-bold text-[#F6EFE2] sm:mt-1 sm:text-2xl">Your Flock ({birds.length})</h1>
+          <p className="mt-0.5 text-[11px] text-[#9EB09F] sm:mt-1 sm:text-xs">
+            Tap any conure to inspect pedigrees, or pair a Ready Male (ZZ) + Female (ZW) — laying &amp; hatching proceed automatically.
           </p>
         </div>
 
@@ -196,7 +193,7 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#E8B84B]">
             <Egg className="h-4 w-4" /> Active Breeding Cages ({activeCages.length})
           </div>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 lg:grid-cols-3">
             {activeCages.map((cage) => {
               const eggsLaid = effectiveNowMs >= cage.laidAt;
               const layRemaining = Math.max(0, cage.laidAt - effectiveNowMs);
@@ -214,7 +211,7 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
 
               const otherCages = activeCages.filter((c) => c.id !== cage.id);
               return (
-                <div key={cage.id} className="brass-panel rounded-2xl p-4 space-y-3">
+                <div key={cage.id} className="brass-panel rounded-2xl p-3 sm:p-4 space-y-2.5 sm:space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-1.5 text-xs">
                     <span className="font-bold text-[#E8B84B]">
                       {eggsLaid ? `Clutch of ${cage.clutchSize} Eggs` : 'Pair Nesting · Laying Soon'}
@@ -275,22 +272,21 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
                     </div>
                   )}
                   <div className="flex flex-col gap-2">
-                    <button
-                      type="button"
-                      disabled={!ready || busy}
-                      onClick={() => handleHatch(cage.id)}
-                      className={`w-full rounded-xl py-2 text-xs font-extrabold transition ${
+                    <div
+                      className={`w-full rounded-xl border py-2 px-3 text-center text-[11px] font-bold ${
                         ready
-                          ? 'bg-emerald-400 text-[#0F1F14] hover:bg-emerald-300'
-                          : 'bg-[#18231B] text-[#7D8F7F] border border-[#C8922A]/20'
+                          ? 'border-emerald-400/50 bg-emerald-950/45 text-emerald-200'
+                          : eggsLaid
+                            ? 'border-[#C8922A]/30 bg-[#18231B] text-[#E8B84B]'
+                            : 'border-sky-400/30 bg-[#142026] text-sky-200'
                       }`}
                     >
                       {!eggsLaid
-                        ? 'Laying Eggs Soon...'
+                        ? 'Nesting · Laying Automatically'
                         : ready
-                        ? `Hatch ${cage.clutchSize} Eggs!`
-                        : 'Incubating Eggs...'}
-                    </button>
+                          ? 'Hatching Automatically...'
+                          : 'Incubating · Auto-Hatches When Ready'}
+                    </div>
                     {eggsLaid && otherCages.length > 0 && (
                       <button
                         type="button"
@@ -331,24 +327,24 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
             key={key}
             type="button"
             onClick={() => setFilter(key)}
-            className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold transition ${
+            className={`shrink-0 rounded-full border px-2.5 py-1.5 text-[11px] font-bold transition sm:px-3 sm:text-xs ${
               filter === key
                 ? 'border-[#E8B84B] bg-[#E8B84B] text-[#141A15]'
                 : 'border-[#C8922A]/30 bg-[#18221B] text-[#D9CEB8] hover:border-[#E8B84B]/60'
             }`}
           >
-            {label}
+            {label} <span className="font-mono-num opacity-75">({filterCounts[key]})</span>
           </button>
         ))}
       </div>
 
-      {/* Aviary Grid */}
+      {/* Aviary Grid (2 side-by-side on mobile, expanding on larger screens) */}
       {filtered.length === 0 ? (
-        <div className="brass-panel rounded-2xl p-10 text-center text-sm text-[#9EB09F]">
+        <div className="brass-panel rounded-2xl p-8 text-center text-sm text-[#9EB09F] sm:p-10">
           No conures match this filter. Visit the Wild Exchange or Breeding Cages to grow your flock.
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2.5 sm:gap-4 lg:grid-cols-3 xl:grid-cols-4">
           {filtered.map((bird) => {
             const live = getLiveBirdStatus(bird, effectiveNowMs);
             const isPairingCompatible =
@@ -361,6 +357,7 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
                 key={bird.id}
                 bird={bird}
                 nowMs={effectiveNowMs}
+                compactOnMobile
                 selected={pairSource?.id === bird.id}
                 onClick={() => {
                   if (pairSource && isPairingCompatible) {
@@ -370,16 +367,17 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
                   }
                 }}
                 footer={
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 sm:justify-between sm:gap-2">
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedBird(bird);
                       }}
-                      className="rounded-lg border border-[#C8922A]/40 bg-[#17211A] px-2.5 py-1 text-[11px] font-bold text-[#D9CEB8] hover:border-[#E8B84B]"
+                      className="flex-1 sm:flex-none rounded-lg border border-[#C8922A]/40 bg-[#17211A] px-2 py-1.5 text-[11px] font-bold text-[#D9CEB8] hover:border-[#E8B84B] sm:px-2.5 sm:py-1"
                     >
-                      Inspect &amp; Pedigree
+                      <span className="sm:hidden">Inspect</span>
+                      <span className="hidden sm:inline">Inspect &amp; Pedigree</span>
                     </button>
                     <button
                       type="button"
@@ -388,7 +386,7 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
                         e.stopPropagation();
                         handleRequestPair(bird);
                       }}
-                      className={`rounded-lg px-2.5 py-1 text-[11px] font-extrabold transition disabled:opacity-35 ${
+                      className={`flex-1 sm:flex-none rounded-lg px-2 py-1.5 text-[11px] font-extrabold transition disabled:opacity-35 sm:px-2.5 sm:py-1 ${
                         isPairingCompatible
                           ? 'bg-emerald-400 text-[#0F1F14] hover:bg-emerald-300'
                           : pairSource?.id === bird.id
@@ -450,7 +448,7 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
               </div>
             ) : (
               <div className="rounded-xl border border-emerald-500/40 bg-emerald-950/30 p-3 text-xs text-emerald-200">
-                Clean outcross pairing (COI <span className="font-mono-num font-bold">0.0%</span>). Clutch size will roll 3–5 eggs with 6-hour incubation.
+                Clean outcross pairing (COI <span className="font-mono-num font-bold">0.0%</span>). Clutch size will roll 3–5 eggs and hatch automatically after laying + 6h incubation.
               </div>
             )}
 
@@ -473,71 +471,6 @@ export function AviaryPage({ onSendToShowroom }: AviaryPageProps) {
                 }`}
               >
                 {pairConfirm.preview.coiWarning ? 'Acknowledge & Pair Anyway' : 'Place in Breeding Cage'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Hatch Celebration Modal */}
-      {hatchResult && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4">
-          <div className="brass-panel max-h-[92dvh] w-full max-w-4xl overflow-y-auto rounded-t-2xl p-4 sm:rounded-2xl sm:p-6 space-y-5">
-            <div className="flex items-center justify-between border-b border-[#C8922A]/25 pb-3">
-              <div>
-                <h2 className="font-display text-2xl font-bold text-[#F6EFE2]">
-                  Clutch Hatched! ({hatchResult.chicks.length} Chicks)
-                </h2>
-                <p className="text-xs text-[#9EB09F]">
-                  Downy chicks reveal their feathers &amp; genetics in 3h, then reach Adult maturity 3h later. Parents are immediately Ready to pair again!
-                </p>
-              </div>
-              <button type="button" onClick={() => setHatchResult(null)} className="text-[#9EB09F] hover:text-white">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {hatchResult.fosterLostCount !== undefined && hatchResult.fosterLostCount > 0 && (
-              <div className="flex items-start gap-2.5 rounded-xl border border-rose-500/50 bg-rose-950/45 p-3.5 text-xs text-rose-100">
-                <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0 mt-0.5" />
-                <div>
-                  <strong>Overcrowded Nest ({hatchResult.fosterOverloadTotal} eggs):</strong>{' '}
-                  {hatchResult.fosterLostCount} extra chick(s) beyond the safe limit of 5 did not survive (50/50 survival chance on extras).
-                </div>
-              </div>
-            )}
-
-            {hatchResult.notifications.length > 0 && (
-              <div className="rounded-xl border border-emerald-400/60 bg-emerald-950/45 p-4 space-y-1.5">
-                {hatchResult.notifications.map((n) => (
-                  <div key={n.id} className="flex items-start gap-2.5 text-xs text-emerald-100">
-                    <Sparkles className="h-4 w-4 text-emerald-300 shrink-0 mt-0.5" />
-                    <div>
-                      <strong>{n.title}:</strong> {n.message}
-                      {hatchResult.retroactivelyRevealedBirdIds.length > 0 && (
-                        <span className="ml-1 text-emerald-300 font-bold">
-                          ({hatchResult.retroactivelyRevealedBirdIds.length} carrier(s) unmasked in your flock!)
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
-              {hatchResult.chicks.map((chick) => (
-                <ConureCard key={chick.id} bird={chick} nowMs={effectiveNowMs} />
-              ))}
-            </div>
-
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={() => setHatchResult(null)}
-                className="rounded-xl bg-[#E8B84B] px-5 py-2.5 text-xs font-extrabold text-[#141A15]"
-              >
-                Welcome Chicks to Aviary
               </button>
             </div>
           </div>

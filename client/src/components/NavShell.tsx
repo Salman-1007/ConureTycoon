@@ -45,7 +45,6 @@ export function NavShell({ children }: { children: React.ReactNode }) {
     setSupportOpen,
     serverTime,
     effectiveNowMs,
-    activeCages,
     toasts,
     dismissToast,
     refreshAll,
@@ -59,7 +58,6 @@ export function NavShell({ children }: { children: React.ReactNode }) {
   if (!user) return <>{children}</>;
 
   const unreadCount = user.notifications.filter((n) => !n.read).length;
-  const readyToHatchCount = activeCages.filter((c) => effectiveNowMs >= c.hatchReadyAt).length;
   const marketLeft = serverTime ? Math.max(0, serverTime.nextRefreshUtcMs - effectiveNowMs) : 0;
 
   const handleOpenNotifs = async () => {
@@ -140,11 +138,6 @@ export function NavShell({ children }: { children: React.ReactNode }) {
                 >
                   <Icon className="h-4 w-4" />
                   {item.label}
-                  {item.id === 'aviary' && readyToHatchCount > 0 && (
-                    <span className="ml-0.5 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-black text-white">
-                      {readyToHatchCount}
-                    </span>
-                  )}
                 </button>
               );
             })}
@@ -341,9 +334,6 @@ export function NavShell({ children }: { children: React.ReactNode }) {
             >
               <Icon className="h-5 w-5" />
               <span>{item.shortLabel}</span>
-              {item.id === 'aviary' && readyToHatchCount > 0 && (
-                <span className="absolute right-1 top-0 h-2.5 w-2.5 rounded-full bg-emerald-400" />
-              )}
             </button>
           );
         })}
